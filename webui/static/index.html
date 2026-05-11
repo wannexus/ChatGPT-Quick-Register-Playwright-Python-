@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChatGPT Quick Register</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --panel-2: #1d2230;
+      --border: #2a3140;
+      --fg: #e6edf3;
+      --fg-muted: #97a4b3;
+      --accent: #4f8cff;
+      --ok: #2ea043;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", Arial, sans-serif;
+    }
+    header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--panel);
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .stats { color: var(--fg-muted); font-size: 12px; }
+    .stats b { color: var(--fg); }
+
+    main {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 12px;
+      padding: 12px;
+      height: calc(100vh - 50px);
+      overflow: hidden;
+    }
+    aside { overflow-y: auto; padding-right: 4px; }
+    .right { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; min-height: 0; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--fg-muted);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+
+    label { display: block; margin-bottom: 8px; font-size: 12px; color: var(--fg-muted); }
+    label > span { display: block; margin-bottom: 4px; }
+    input, select, textarea {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .checkrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; color: var(--fg); }
+    .checkrow input { width: 14px; height: 14px; }
+
+    button {
+      background: var(--panel-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    button.primary:hover { filter: brightness(1.1); }
+    button.danger { color: var(--err); border-color: var(--border); }
+    button.danger:hover { border-color: var(--err); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btnrow { display: flex; gap: 8px; }
+
+    #log {
+      background: #0a0d12;
+      border-radius: 6px;
+      padding: 10px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      color: #b9c2cc;
+      flex: 1; min-height: 0;
+    }
+    #log .ok { color: var(--ok); }
+    #log .warn { color: var(--warn); }
+    #log .err { color: var(--err); }
+    #log .head { color: var(--accent); font-weight: 600; }
+    #log .step { color: #9d6cff; }
+    #log .session { color: #4ed1ff; }
+
+    .table {
+      overflow: auto;
+      flex: 1; min-height: 0;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td {
+      text-align: left;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    th { color: var(--fg-muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+    tr:hover td { background: var(--panel-2); }
+    td.email { font-family: ui-monospace, monospace; }
+    td.actions { text-align: right; }
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      border: 1px solid var(--border);
+    }
+    .badge.ok { color: var(--ok); border-color: var(--ok); }
+    .badge.empty { color: var(--err); border-color: var(--err); }
+    .badge.muted { color: var(--fg-muted); }
+
+    .rflex { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: 8px; }
+    .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .small-btn { padding: 3px 8px; font-size: 11px; }
+    .pill { padding: 1px 6px; border-radius: 999px; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); }
+    .pill.running { color: var(--accent); border-color: var(--accent); }
+    .pill.idle { color: var(--fg-muted); }
+
+    /* Modal for viewing JSON */
+    .modal-bg {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: none; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal-bg.open { display: flex; }
+    .modal {
+      width: min(900px, 92vw); height: min(80vh, 700px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .modal-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .modal-body {
+      flex: 1;
+      overflow: auto;
+      padding: 12px 14px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .modal-foot {
+      padding: 8px 14px;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    summary { cursor: pointer; padding: 4px 0; font-size: 12px; color: var(--fg-muted); }
+    details > div { padding: 6px 0; border-top: 1px dashed var(--border); margin-top: 4px; }
+
+    .hint { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
+    .grow { flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🦆 ChatGPT Quick Register</h1>
+    <div class="stats" id="stats">读取中…</div>
+  </header>
+
+  <main>
+    <!-- LEFT: form -->
+    <aside>
+      <div class="panel">
+        <h2>批量注册 <span class="pill idle" id="status-pill">idle</span></h2>
+
+        <div class="row2">
+          <label><span>邮箱来源</span>
+            <select id="emailSource">
+              <option value="duck-api">DDG API（推荐）</option>
+              <option value="duck">DDG 浏览器</option>
+              <option value="manual">手动</option>
+            </select>
+          </label>
+          <label><span>验证码来源</span>
+            <select id="codeSource">
+              <option value="qq">QQ IMAP（自动）</option>
+              <option value="manual">手动输入</option>
+            </select>
+          </label>
+        </div>
+
+        <label><span>认证方式</span>
+          <select id="authMode">
+            <option value="otp">OTP 一次性验证码（推荐）</option>
+            <option value="password">密码注册</option>
+          </select>
+        </label>
+
+        <div class="row2">
+          <label><span>批量数 <code class="hint">--count</code></span>
+            <input id="count" type="number" min="1" value="5" />
+          </label>
+          <label><span>冷却秒数 <code class="hint">--cooldown</code></span>
+            <input id="cooldown" type="number" min="0" value="30" />
+          </label>
+        </div>
+
+        <details>
+          <summary>邮箱来源 / 凭据</summary>
+          <div>
+            <label id="emailRow"><span>邮箱（manual 时必填）</span>
+              <input id="email" placeholder="name@example.com" />
+            </label>
+            <label><span>密码（password 模式时用）</span>
+              <input id="password" placeholder="留空自动生成" />
+            </label>
+            <label><span>DuckDuckGo Token</span>
+              <input id="duckToken" placeholder="auth_token" />
+            </label>
+            <label><span>QQ 邮箱</span>
+              <input id="qqUser" placeholder="xxx@qq.com" />
+            </label>
+            <label><span>QQ IMAP 授权码</span>
+              <input id="qqPass" type="password" placeholder="16 位授权码" />
+            </label>
+            <div class="btnrow">
+              <button type="button" id="saveSecretsBtn">保存凭据到本地配置</button>
+            </div>
+          </div>
+        </details>
+
+        <details>
+          <summary>高级</summary>
+          <div>
+            <label><span>代理</span><input id="proxy" placeholder="http://127.0.0.1:7890" /></label>
+            <div class="row2">
+              <label><span>QQ 轮询次数</span><input id="qqMaxAttempts" type="number" min="1" placeholder="90" /></label>
+              <label><span>QQ 轮询间隔(秒)</span><input id="qqInterval" type="number" min="0.5" step="0.5" placeholder="1.5" /></label>
+            </div>
+            <div class="checkrow"><input type="checkbox" id="headless" /><label for="headless">headless</label></div>
+            <div class="checkrow"><input type="checkbox" id="noPersistent" /><label for="noPersistent">不使用持久化 profile</label></div>
+            <div class="checkrow"><input type="checkbox" id="noClearTokens" /><label for="noClearTokens">不清 OpenAI cookies（默认会清）</label></div>
+            <div class="checkrow"><input type="checkbox" id="stopOnError" /><label for="stopOnError">失败立即停止</label></div>
+            <div class="checkrow"><input type="checkbox" id="runCodexOauth" /><label for="runCodexOauth">获取 Codex OAuth 凭据（可选，给 SUB2API 用；默认跳过）</label></div>
+          </div>
+        </details>
+
+        <div class="btnrow" style="margin-top: 12px;">
+          <button id="startBtn" class="primary grow">开始批量注册</button>
+          <button id="stopBtn" class="danger">停止</button>
+        </div>
+        <div class="hint" id="argsPreview"></div>
+      </div>
+    </aside>
+
+    <!-- RIGHT: log + accounts table -->
+    <section class="right">
+      <div class="panel rflex">
+        <h2>实时日志
+          <div>
+            <button class="small-btn" id="clearLog">清屏</button>
+            <button class="small-btn" id="autoScroll">📍 自动滚动</button>
+          </div>
+        </h2>
+        <pre id="log"></pre>
+      </div>
+
+      <div class="panel rflex">
+        <h2>账号文件 (output/*.json)
+          <div>
+            <button class="small-btn" id="refreshList">刷新</button>
+            <button class="small-btn primary" id="reloginMarkedBtn" disabled>重登标记账号 (0)</button>
+            <button class="small-btn danger" id="deleteReloginBtn" disabled>删除重登账号</button>
+            <button class="small-btn danger" id="cleanupBtn">删除空 session</button>
+            <button class="small-btn" id="copyTokens">复制 access_token</button>
+            <button class="small-btn primary" id="sub2apiBtn">→ SUB2API</button>
+          </div>
+        </h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>重登</th>
+                <th>过期</th>
+                <th>用户邮箱(session)</th>
+                <th>auth</th>
+                <th>保存时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="accountList">
+              <tr><td colspan="8" style="text-align: center; color: var(--fg-muted);">读取中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- SUB2API modal -->
+  <div class="modal-bg" id="sub2apiModal">
+    <div class="modal" style="height: auto; max-height: 90vh; overflow: auto;">
+      <div class="modal-head">
+        <span><b>批量转换 / 推送到 SUB2API</b></span>
+        <button onclick="closeSub2api()">关闭 ✕</button>
+      </div>
+      <div class="modal-body" style="font-family: inherit; white-space: normal;">
+        <p style="margin-top:0;color:var(--fg-muted)">读取 <code>output/*.json</code> 里所有有效账号，转成 SUB2API 创建账号 payload。可以**下载 JSON 文件**手动导入，或**直接 POST 到你的 SUB2API**。</p>
+
+        <div class="row2">
+          <label><span>分组名 group_name</span><input id="s2gName" value="codex" /></label>
+          <label><span>分组 ID（仅下载 JSON 需要）</span><input id="s2gId" type="number" placeholder="1" value="1" /></label>
+        </div>
+        <div class="row2">
+          <label><span>concurrency</span><input id="s2concurrency" type="number" value="5" /></label>
+          <label><span>priority</span><input id="s2priority" type="number" value="1" /></label>
+        </div>
+        <div class="row2">
+          <label><span>rate_multiplier</span><input id="s2rate" type="number" value="1" /></label>
+          <label><span>privacy_mode</span>
+            <select id="s2privacy">
+              <option value="training_off">training_off（推荐）</option>
+              <option value="training_on">training_on</option>
+            </select>
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>跳过空 session</span>
+            <select id="s2skip"><option value="1">是（推荐）</option><option value="0">否</option></select>
+          </label>
+          <label><span>仅含 codex OAuth 的账号</span>
+            <select id="s2reqCodex">
+              <option value="1">是（推荐：含 refresh_token）</option>
+              <option value="0">否（用 web session 兜底）</option>
+            </select>
+          </label>
+        </div>
+
+        <details open>
+          <summary>推送目标（仅推送时需要）</summary>
+          <div>
+            <label><span>SUB2API base URL</span><input id="s2base" placeholder="http://your-host:port" /></label>
+            <div class="row2">
+              <label><span>管理员邮箱</span><input id="s2email" /></label>
+              <label><span>管理员密码</span><input id="s2pass" type="password" /></label>
+            </div>
+            <label><span>代理（可选）</span><input id="s2proxy" placeholder="http://127.0.0.1:7890" /></label>
+            <div class="checkrow"><input type="checkbox" id="s2dry" /><label for="s2dry">Dry run（只解析、不真正创建）</label></div>
+          </div>
+        </details>
+
+        <div class="btnrow" style="margin-top: 14px;">
+          <button id="s2preview">预览</button>
+          <button id="s2download" class="primary">下载 JSON</button>
+          <button id="s2push" class="primary">推送到 SUB2API</button>
+        </div>
+
+        <pre id="s2result" style="margin-top:14px;background:#0a0d12;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;font-size:11px;max-height:280px;overflow:auto;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- JSON modal -->
+  <div class="modal-bg" id="modal">
+    <div class="modal">
+      <div class="modal-head">
+        <span id="modalTitle"></span>
+        <button onclick="closeModal()">关闭 ✕</button>
+      </div>
+      <pre class="modal-body" id="modalBody"></pre>
+      <div class="modal-foot">
+        <button id="copyJson">复制 JSON</button>
+        <button id="copyToken" class="primary">复制 accessToken</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+const statusPill = $("status-pill");
+const stats = $("stats");
+
+let autoScroll = true;
+let reloginMarkedCount = 0;
+let evtSource = null;
+let reloginAutoQueue = false;
+let reloginSubmitting = false;
+
+function fmtLine(line) {
+  const safe = line.replace(/[<>&]/g, c => ({'<':'&lt;', '>':'&gt;', '&':'&amp;'}[c]));
+  if (/✓|✗|done|成功|失败/i.test(line)) {
+    if (/✗|失败|error|failed/i.test(line)) return `<span class="err">${safe}</span>`;
+    return `<span class="ok">${safe}</span>`;
+  }
+  if (/warn|warning/i.test(line)) return `<span class="warn">${safe}</span>`;
+  if (/=========/.test(line)) return `<span class="head">${safe}</span>`;
+  if (/^\[step \d|\[step \d/.test(line)) return `<span class="step">${safe}</span>`;
+  if (/\[session\]/.test(line)) return `<span class="session">${safe}</span>`;
+  return safe;
+}
+
+function appendLog(line) {
+  if (!line) return;
+  logEl.innerHTML += fmtLine(line) + "\n";
+  if (autoScroll) logEl.scrollTop = logEl.scrollHeight;
+}
+
+function startStream() {
+  if (evtSource) return;
+  evtSource = new EventSource("/api/batch/stream");
+  evtSource.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg) appendLog(msg);
+    } catch {}
+  };
+  evtSource.onerror = () => {
+    evtSource.close();
+    evtSource = null;
+    setTimeout(startStream, 1500);
+  };
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch("/api/batch/status").then(r => r.json());
+    if (r.running) {
+      statusPill.textContent = "running";
+      statusPill.className = "pill running";
+    } else {
+      statusPill.textContent = "idle";
+      statusPill.className = "pill idle";
+      if (reloginAutoQueue) setTimeout(continueReloginQueue, 600);
+    }
+  } catch {}
+}
+
+async function refreshAccounts() {
+  const tbody = $("accountList");
+  try {
+    const rows = await fetch("/api/accounts").then(r => r.json());
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--fg-muted);">还没有账号文件</td></tr>`;
+      stats.innerHTML = `共 <b>0</b> 个账号`;
+      reloginMarkedCount = 0;
+      if ($("reloginMarkedBtn")) { $("reloginMarkedBtn").textContent = "重登标记账号 (0)"; $("reloginMarkedBtn").disabled = true; }
+      if ($("deleteReloginBtn")) $("deleteReloginBtn").disabled = true;
+      return;
+    }
+    const ok = rows.filter(r => r.hasAccessToken).length;
+    const empty = rows.length - ok;
+    const relogin = rows.filter(r => r.reloginRequired).length;
+    reloginMarkedCount = relogin;
+    if ($("reloginMarkedBtn")) { $("reloginMarkedBtn").textContent = `重登标记账号 (${relogin})`; $("reloginMarkedBtn").disabled = relogin === 0; }
+    if ($("deleteReloginBtn")) { $("deleteReloginBtn").textContent = `删除重登账号 (${relogin})`; $("deleteReloginBtn").disabled = relogin === 0; }
+    stats.innerHTML = `共 <b>${rows.length}</b> 个账号 · <span style="color:var(--ok)">有效 ${ok}</span> · <span style="color:var(--err)">空 ${empty}</span> · <span style="color:var(--warn)">需重登 ${relogin}</span>`;
+    tbody.innerHTML = rows.map(r => {
+      const ok = r.hasAccessToken;
+      const expires = r.expires ? r.expires.replace("T", " ").slice(0, 19) : "-";
+      const user = r.userEmail || '<span class="badge muted">-</span>';
+      const saved = (r.savedAt || "").replace("T", " ").slice(0, 19);
+      const reloginCell = r.reloginRequired
+        ? `<span class="badge empty" title="${r.reloginReason || ''}">需要重登</span>`
+        : `<span class="badge muted">-</span>`;
+      return `<tr>
+        <td class="email">${r.email}</td>
+        <td><span class="badge ${ok ? 'ok' : 'empty'}">${ok ? '有 token' : '空 session'}</span></td>
+        <td>${reloginCell}</td>
+        <td>${expires}</td>
+        <td>${user}</td>
+        <td><span class="pill">${r.authMode || '-'}</span></td>
+        <td>${saved}</td>
+        <td class="actions">
+          <button class="small-btn" onclick="viewAccount('${r.filename}')">查看</button>
+          <button class="small-btn danger" onclick="deleteAccount('${r.filename}')">删除</button>
+        </td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--err)">加载失败：${e}</td></tr>`;
+  }
+}
+
+async function viewAccount(filename) {
+  const data = await fetch("/api/accounts/" + encodeURIComponent(filename)).then(r => r.json());
+  $("modalTitle").textContent = filename;
+  const text = JSON.stringify(data, null, 2);
+  $("modalBody").textContent = text;
+  $("modal").classList.add("open");
+  $("copyJson").onclick = () => { navigator.clipboard.writeText(text); flash($("copyJson"), "已复制"); };
+  const tok = (data.session || {}).accessToken || "";
+  $("copyToken").disabled = !tok;
+  $("copyToken").onclick = () => { navigator.clipboard.writeText(tok); flash($("copyToken"), "已复制"); };
+}
+function closeModal() { $("modal").classList.remove("open"); }
+
+async function deleteAccount(filename) {
+  if (!confirm(`确认删除 ${filename}?`)) return;
+  await fetch("/api/accounts/" + encodeURIComponent(filename), { method: "DELETE" });
+  await refreshAccounts();
+}
+
+async function cleanupEmpty() {
+  const r = await fetch("/api/accounts/cleanup", { method: "POST" }).then(r => r.json());
+  alert(`已删除 ${r.count} 个空 session 文件`);
+  await refreshAccounts();
+}
+
+async function deleteReloginAccounts() {
+  await refreshAccounts();
+  if (reloginMarkedCount <= 0) { alert("没有需要重登的账号"); return; }
+  if (!confirm(`确认删除 ${reloginMarkedCount} 个需要重登的账号 JSON？此操作不可撤销。`)) return;
+  const r = await fetch("/api/accounts/delete-relogin-required", { method: "POST" }).then(r => r.json());
+  if (!r.ok) { alert("删除失败"); return; }
+  let msg = `已删除 ${r.count} 个需要重登账号`;
+  if (r.failed && r.failed.length) msg += `，失败 ${r.failed.length} 个`;
+  alert(msg);
+  await refreshAccounts();
+}
+
+async function saveSecrets() {
+  const payload = {
+    duckToken: $("duckToken").value.trim(),
+    duckBaseUrl: $("duckBaseUrl") ? $("duckBaseUrl").value.trim() : "",
+    qqUser: $("qqUser").value.trim(),
+    qqPass: $("qqPass").value,
+    proxy: $("proxy").value.trim(),
+  };
+  const r = await fetch("/api/defaults", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  if (!r.ok) { alert("保存失败"); return; }
+  alert("已保存到 " + r.configPath);
+}
+
+async function reloginMarkedAccounts() {
+  await refreshAccounts();
+  if (reloginMarkedCount <= 0) { alert("没有需要重登的账号"); return; }
+  const payload = buildPayload();
+  if (payload.codeSource !== "qq") { alert("一键重登需要选择 QQ IMAP 自动收码"); return; }
+  if (!payload.qqUser || !payload.qqPass) { alert("请先填写 QQ 邮箱和 IMAP 授权码"); return; }
+  if (!confirm(`将自动重登 ${reloginMarkedCount} 个标记账号。会按小批量连续执行，卡住的账号会超时跳过，确认继续？`)) return;
+  reloginAutoQueue = true;
+  await continueReloginQueue();
+}
+
+async function continueReloginQueue() {
+  if (!reloginAutoQueue) return;
+  if (reloginSubmitting) return;
+  reloginSubmitting = true;
+  try {
+    const status = await fetch("/api/batch/status").then(r => r.json()).catch(() => ({running: true}));
+    if (status.running) return;
+    await refreshAccounts();
+    if (reloginMarkedCount <= 0) {
+      reloginAutoQueue = false;
+      appendLog("[ui] 重登队列完成，没有剩余标记账号");
+      return;
+    }
+    const payload = buildPayload();
+    payload.reloginLimit = 1;
+    payload.reloginTimeout = 180;
+    payload.cooldown = 0;
+    const r = await fetch("/api/accounts/relogin", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (!r.ok) {
+      reloginAutoQueue = false;
+      alert("启动重登失败：" + r.error);
+      return;
+    }
+    appendLog(`[ui] 已提交重登小批次：1/${r.markedCount} 个待处理`);
+    pollStatus();
+  } finally {
+    reloginSubmitting = false;
+  }
+}
+
+function flash(btn, label) {
+  const old = btn.textContent;
+  btn.textContent = label;
+  setTimeout(() => btn.textContent = old, 1200);
+}
+
+async function copyAllTokens() {
+  const rows = await fetch("/api/accounts").then(r => r.json());
+  const tokens = [];
+  for (const r of rows) {
+    if (!r.hasAccessToken) continue;
+    const data = await fetch("/api/accounts/" + encodeURIComponent(r.filename)).then(x => x.json());
+    const t = (data.session || {}).accessToken;
+    if (t) tokens.push(t);
+  }
+  navigator.clipboard.writeText(tokens.join("\n"));
+  flash($("copyTokens"), `已复制 ${tokens.length} 个`);
+}
+
+function buildPayload() {
+  const num = (id) => {
+    const v = $(id).value.trim();
+    return v === "" ? null : Number(v);
+  };
+  return {
+    emailSource: $("emailSource").value,
+    codeSource: $("codeSource").value,
+    authMode: $("authMode").value,
+    count: Math.max(1, parseInt($("count").value || "1", 10)),
+    cooldown: Math.max(0, parseInt($("cooldown").value || "0", 10)),
+    email: $("email").value.trim(),
+    password: $("password").value.trim(),
+    duckToken: $("duckToken").value.trim(),
+    qqUser: $("qqUser").value.trim(),
+    qqPass: $("qqPass").value,
+    qqMaxAttempts: num("qqMaxAttempts"),
+    qqInterval: num("qqInterval"),
+    proxy: $("proxy").value.trim(),
+    headless: $("headless").checked,
+    noPersistent: $("noPersistent").checked,
+    noClearTokens: $("noClearTokens").checked,
+    stopOnError: $("stopOnError").checked,
+    runCodexOauth: $("runCodexOauth").checked,
+  };
+}
+
+$("startBtn").onclick = async () => {
+  const payload = buildPayload();
+  // Save to localStorage to remember preferences (skip secret-ish fields)
+  const remembered = {...payload};
+  delete remembered.qqPass; delete remembered.duckToken; delete remembered.password;
+  localStorage.setItem("qr.lastForm", JSON.stringify(remembered));
+
+  const r = await fetch("/api/batch/start", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  if (!r.ok) { alert("启动失败：" + r.error); return; }
+  appendLog("[ui] 已提交批量任务");
+  pollStatus();
+};
+
+$("stopBtn").onclick = async () => {
+  if (!confirm("确认停止当前任务？")) return;
+  reloginAutoQueue = false;
+  await fetch("/api/batch/stop", { method: "POST" });
+  pollStatus();
+};
+
+// ===== SUB2API modal =====
+function openSub2api() {
+  // 自动复用左侧表单的 proxy
+  const left = document.getElementById("proxy");
+  if (left && left.value && !$("s2proxy").value) $("s2proxy").value = left.value;
+  $("sub2apiModal").classList.add("open");
+  $("s2result").textContent = "";
+}
+function closeSub2api() { $("sub2apiModal").classList.remove("open"); }
+$("sub2apiBtn").onclick = openSub2api;
+
+function s2common() {
+  return {
+    groupName: $("s2gName").value.trim() || "codex",
+    groupId: Number($("s2gId").value || "1"),
+    concurrency: Number($("s2concurrency").value || "5"),
+    priority: Number($("s2priority").value || "1"),
+    rateMultiplier: Number($("s2rate").value || "1"),
+    privacyMode: $("s2privacy").value || "training_off",
+    skipEmpty: $("s2skip").value === "1",
+    requireCodex: ($("s2reqCodex") || {value: "1"}).value === "1",
+    autoPauseOnExpired: true,
+  };
+}
+
+function s2write(text) { $("s2result").textContent = text; }
+function s2append(text) { $("s2result").textContent += text + "\n"; $("s2result").scrollTop = $("s2result").scrollHeight; }
+
+$("s2preview").onclick = async () => {
+  s2write("预览中…");
+  try {
+    const r = await fetch("/api/sub2api/preview", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(s2common()),
+    }).then(r => r.json());
+    let out = `命中可导入账号：${r.count}\n`;
+    if (r.skipped?.length) out += `跳过：${r.skipped.length}\n` + r.skipped.map(s => `  · ${s.file}: ${s.reason}`).join("\n") + "\n";
+    out += "\n样例（access_token 截断显示）：\n" + JSON.stringify(r.sample, null, 2);
+    s2write(out);
+  } catch (e) {
+    s2write("预览失败：" + e);
+  }
+};
+
+$("s2download").onclick = async () => {
+  s2write("生成中…");
+  const resp = await fetch("/api/sub2api/export", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(s2common()),
+  });
+  if (!resp.ok) { s2write("导出失败：" + resp.status); return; }
+  const blob = await resp.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `sub2api-batch.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  s2write("已下载到浏览器默认下载目录。");
+};
+
+$("s2push").onclick = async () => {
+  const base = $("s2base").value.trim();
+  const email = $("s2email").value.trim();
+  const password = $("s2pass").value;
+  if (!base || !email || !password) { alert("请先填 base URL、管理员邮箱、密码"); return; }
+
+  if (!confirm(`将向 ${base} 推送账号，确认？`)) return;
+  s2write("推送中…\n");
+  const payload = {
+    ...s2common(),
+    baseUrl: base,
+    email,
+    password,
+    proxy: $("s2proxy").value.trim(),
+    dryRun: $("s2dry").checked,
+  };
+  // 备份非敏感字段到 localStorage
+  localStorage.setItem("qr.s2last", JSON.stringify({
+    baseUrl: base, email, groupName: payload.groupName,
+    groupId: payload.groupId, concurrency: payload.concurrency,
+    priority: payload.priority, rateMultiplier: payload.rateMultiplier,
+  }));
+
+  try {
+    const r = await fetch("/api/sub2api/push", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (!r.ok) { s2write("失败：" + r.error + "\n\n" + (r.log || []).join("\n")); return; }
+    let out = `推送完成 · pushed=${r.pushed.length}  failed=${r.failed.length}  skipped=${r.skipped.length}\n\n`;
+    if (r.pushed.length) out += "成功：\n" + r.pushed.map(x => `  ✓ ${x.name}  id=${x.id ?? '?'}` + (x.dryRun ? "  (dry-run)" : "")).join("\n") + "\n\n";
+    if (r.failed.length) out += "失败：\n" + r.failed.map(x => `  ✗ ${x.name}  ${x.error}`).join("\n") + "\n\n";
+    if (r.skipped.length) out += "跳过：\n" + r.skipped.map(x => `  · ${x.file}  ${x.reason}`).join("\n") + "\n\n";
+    out += "进度日志：\n" + (r.log || []).join("\n");
+    s2write(out);
+  } catch (e) {
+    s2write("请求异常：" + e);
+  }
+};
+
+// 恢复上次 SUB2API 配置
+try {
+  const last = JSON.parse(localStorage.getItem("qr.s2last") || "null");
+  if (last) {
+    if (last.baseUrl) $("s2base").value = last.baseUrl;
+    if (last.email) $("s2email").value = last.email;
+    if (last.groupName) $("s2gName").value = last.groupName;
+    if (last.groupId) $("s2gId").value = last.groupId;
+    if (last.concurrency) $("s2concurrency").value = last.concurrency;
+    if (last.priority) $("s2priority").value = last.priority;
+    if (last.rateMultiplier) $("s2rate").value = last.rateMultiplier;
+  }
+} catch {}
+
+$("clearLog").onclick = () => { logEl.innerHTML = ""; };
+$("autoScroll").onclick = () => {
+  autoScroll = !autoScroll;
+  $("autoScroll").style.opacity = autoScroll ? 1 : 0.4;
+};
+$("refreshList").onclick = refreshAccounts;
+$("reloginMarkedBtn").onclick = reloginMarkedAccounts;
+$("deleteReloginBtn").onclick = deleteReloginAccounts;
+$("cleanupBtn").onclick = cleanupEmpty;
+$("copyTokens").onclick = copyAllTokens;
+$("saveSecretsBtn").onclick = saveSecrets;
+
+// Pre-fill secrets from server defaults / localStorage prefs
+async function init() {
+  try {
+    const d = await fetch("/api/defaults").then(r => r.json());
+    if (d.duckToken) $("duckToken").value = d.duckToken;
+    if (d.qqUser) $("qqUser").value = d.qqUser;
+    if (d.qqPass) $("qqPass").value = d.qqPass;
+    if (d.proxy) $("proxy").value = d.proxy;
+  } catch {}
+  try {
+	    const saved = JSON.parse(localStorage.getItem("qr.lastForm") || "null");
+	    if (saved) {
+	      delete saved.noCodexOauth;
+	      if (Number(saved.qqMaxAttempts) === 30) delete saved.qqMaxAttempts;
+	      if (Number(saved.qqInterval) === 5) delete saved.qqInterval;
+	      for (const k in saved) {
+	        const el = $(k);
+	        if (!el) continue;
+        if (el.type === "checkbox") el.checked = !!saved[k];
+        else if (saved[k] != null) el.value = saved[k];
+      }
+    }
+  } catch {}
+  startStream();
+  pollStatus();
+  refreshAccounts();
+  setInterval(pollStatus, 2500);
+  setInterval(refreshAccounts, 8000);
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# Local secrets and machine-specific settings
+config.local.json
+.env
+.env.*
+.DS_Store
+
+# Runtime output: account JSON includes passwords/session tokens.
+output/
+relogin_required.json
+
+# Local assistant/editor state
+.claude/
+.codex/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak

@@ -1,0 +1,744 @@
+"""跑一次 codex CLI 风格的 OAuth 授权拿完整凭据。
+
+流程（前提：page 当前是已登录 chatgpt.com 的 Playwright Page）：
+  1. 生成 PKCE verifier + challenge
+  2. 构造 https://auth.openai.com/oauth/authorize?... 链接
+  3. page.route 注册拦截 http://localhost:1455/** 的请求
+  4. page.goto(authorize_url)
+  5. OpenAI 看到当前 cookie 已登录 → 自动同意 → 302 到 localhost:1455/auth/callback?code=...
+  6. 拦截到 callback，从 query 拿 code
+  7. POST https://auth.openai.com/oauth/token 换出 {access_token, refresh_token, id_token}
+  8. 解析 access_token / id_token JWT 拿 chatgpt_account_id / chatgpt_user_id / organization_id / plan_type
+  9. 拼装 SUB2API 期望的 credentials 字典
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+import secrets
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+
+# ChatGPT/Codex 公开的 OAuth client_id（从用户提供的 access_token JWT 解出）
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CODEX_SCOPE = "openid profile email offline_access"
+AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+TOKEN_URL = "https://auth.openai.com/oauth/token"
+
+# 同意页/继续页可能出现的按钮文本（点了能继续往 callback 跳）
+CONSENT_TEXTS = (
+    "continue", "allow", "authorize", "approve", "yes",
+    "继续", "同意", "授权", "允许", "确认",
+)
+
+# SUB2API export 里 credentials.model_mapping 默认值（来自用户样例）
+DEFAULT_MODEL_MAPPING = {
+    "gpt-5.2": "gpt-5.2",
+    "gpt-5.2-mini": "gpt-5.2-mini",
+    "gpt-5.3-codex": "gpt-5.3-codex",
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.4-2026-03-05": "gpt-5.4-2026-03-05",
+    "gpt-5.4-mini": "gpt-5.4-mini",
+    "gpt-5.5": "gpt-5.5",
+    "gpt-image-1": "gpt-image-1",
+    "gpt-image-1.5": "gpt-image-1.5",
+    "gpt-image-2": "gpt-image-2",
+}
+
+
+# ---------------------------------------------------------------------------
+# PKCE / 授权 URL
+# ---------------------------------------------------------------------------
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def make_pkce() -> "tuple[str, str]":
+    verifier = _b64url(secrets.token_bytes(48))
+    challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+    return verifier, challenge
+
+
+def build_authorize_url(state: str, code_challenge: str) -> str:
+    """注：不带 `audience`——某些 OpenAI client 配置会因为多余 audience 报错。
+    OpenAI 服务端会根据 client_id 自动附 audience 到 access_token 里。"""
+    params = {
+        "response_type": "code",
+        "client_id": CODEX_CLIENT_ID,
+        "redirect_uri": CODEX_REDIRECT_URI,
+        "scope": CODEX_SCOPE,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return AUTHORIZE_URL + "?" + urllib.parse.urlencode(params)
+
+
+# ---------------------------------------------------------------------------
+# JWT 解析（不验签，只读 payload）
+# ---------------------------------------------------------------------------
+
+def jwt_payload(token: Optional[str]) -> Dict[str, Any]:
+    if not token:
+        return {}
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        seg = parts[1]
+        seg += "=" * ((4 - len(seg) % 4) % 4)
+        return json.loads(base64.urlsafe_b64decode(seg).decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# 换 token
+# ---------------------------------------------------------------------------
+
+def exchange_code(code: str, code_verifier: str, *, proxy: Optional[str] = None, timeout: float = 30.0) -> Dict[str, Any]:
+    body = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "client_id": CODEX_CLIENT_ID,
+        "redirect_uri": CODEX_REDIRECT_URI,
+        "code": code,
+        "code_verifier": code_verifier,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(TOKEN_URL, method="POST", data=body, headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    })
+
+    if proxy:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    else:
+        opener = urllib.request.build_opener()
+
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"OAuth /token HTTP {e.code} {e.reason}: {e.read().decode('utf-8', 'replace')[:300]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"OAuth /token 网络错误: {e.reason}") from e
+
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"OAuth /token 返回非 JSON: {raw[:300]!r}") from e
+
+
+# ---------------------------------------------------------------------------
+# 拼装 credentials
+# ---------------------------------------------------------------------------
+
+def _format_expires_at(token_resp: Dict[str, Any], access_payload: Dict[str, Any]) -> str:
+    expires_in = token_resp.get("expires_in")
+    if isinstance(expires_in, (int, float)) and expires_in > 0:
+        ts = time.time() + float(expires_in)
+    else:
+        exp = access_payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return ""
+        ts = float(exp)
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat()
+
+
+def build_codex_credentials(token_resp: Dict[str, Any], *, fallback_email: str = "") -> Dict[str, Any]:
+    access_token = token_resp.get("access_token") or ""
+    if not access_token:
+        raise RuntimeError("OAuth /token 没返回 access_token")
+
+    access_payload = jwt_payload(access_token)
+    auth_claims = access_payload.get("https://api.openai.com/auth", {}) or {}
+    profile_claims = access_payload.get("https://api.openai.com/profile", {}) or {}
+
+    id_token = token_resp.get("id_token") or ""
+    id_payload = jwt_payload(id_token)
+    id_auth = id_payload.get("https://api.openai.com/auth", {}) or {}
+
+    organizations = id_auth.get("organizations") or []
+    org_id = ""
+    for org in organizations:
+        if isinstance(org, dict) and org.get("is_default"):
+            org_id = str(org.get("id") or "")
+            break
+    if not org_id and organizations and isinstance(organizations[0], dict):
+        org_id = str(organizations[0].get("id") or "")
+
+    return {
+        "access_token": access_token,
+        "chatgpt_account_id": str(
+            auth_claims.get("chatgpt_account_id")
+            or id_auth.get("chatgpt_account_id")
+            or ""
+        ),
+        "chatgpt_user_id": str(
+            auth_claims.get("chatgpt_user_id")
+            or id_auth.get("chatgpt_user_id")
+            or ""
+        ),
+        "client_id": CODEX_CLIENT_ID,
+        "email": str(
+            profile_claims.get("email")
+            or id_payload.get("email")
+            or fallback_email
+            or ""
+        ),
+        "expires_at": _format_expires_at(token_resp, access_payload),
+        "id_token": id_token,
+        "model_mapping": dict(DEFAULT_MODEL_MAPPING),
+        "organization_id": org_id,
+        "plan_type": str(
+            auth_claims.get("chatgpt_plan_type")
+            or id_auth.get("chatgpt_plan_type")
+            or "free"
+        ),
+        "refresh_token": token_resp.get("refresh_token") or "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 主入口：drive OAuth in Playwright
+# ---------------------------------------------------------------------------
+
+async def _click_with_force_fallback(loc, timeout_ms: int = 4000) -> bool:
+    """先尝试普通 click，被 overlay 拦下就 force click，再不行就 dispatchEvent。"""
+    try:
+        await loc.click(timeout=timeout_ms)
+        return True
+    except Exception as e1:
+        msg = str(e1)
+        if "intercepts pointer" not in msg and "subtree intercepts" not in msg:
+            try:
+                await loc.click(timeout=2000, force=True)
+                return True
+            except Exception:
+                pass
+        else:
+            try:
+                await loc.click(timeout=2000, force=True)
+                return True
+            except Exception:
+                pass
+    try:
+        await loc.evaluate("(el) => el.click()")
+        return True
+    except Exception:
+        return False
+
+
+async def _try_click_consent(page, account_email: str = "") -> bool:
+    """OAuth consent / 选择账号页，自动点「Continue / Authorize / 继续」类按钮。"""
+    import re as _re
+    pattern = _re.compile("|".join(_re.escape(t) for t in CONSENT_TEXTS), _re.IGNORECASE)
+    cur_url = page.url or ""
+
+    # 特殊：choose-an-account 页。账号项是默认 submit 的 button，但通常没有 type=submit。
+    if "choose-an-account" in cur_url:
+        account_selectors = [
+            "form[action*='choose-an-account'] button[name='session_id']",
+            "button[name='session_id']",
+            "button[data-dd-action-name='Select existing session']",
+        ]
+        if account_email:
+            for selector in account_selectors:
+                try:
+                    matches = page.locator(selector).filter(has_text=account_email)
+                    n = await matches.count()
+                    for i in range(n):
+                        btn = matches.nth(i)
+                        if not await btn.is_visible():
+                            continue
+                        txt = ""
+                        try:
+                            txt = (await btn.inner_text()).strip()
+                        except Exception:
+                            pass
+                        print(f"[codex-oauth] choose-an-account: 点击目标账号 text={txt!r}")
+                        if await _click_with_force_fallback(btn):
+                            return True
+                except Exception:
+                    continue
+
+        for selector in account_selectors:
+            try:
+                buttons = page.locator(selector)
+                n = await buttons.count()
+                for i in range(n):
+                    btn = buttons.nth(i)
+                    try:
+                        if not await btn.is_visible():
+                            continue
+                        txt = ""
+                        try:
+                            txt = (await btn.inner_text()).strip()
+                        except Exception:
+                            pass
+                        if any(bad in txt.lower() for bad in ("remove", "移除", "登录至另一个", "创建帐户")):
+                            continue
+                        print(f"[codex-oauth] choose-an-account: 点击首个账号 text={txt!r}")
+                        if await _click_with_force_fallback(btn):
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    # 特殊：consent 页—首位可见 submit 通常就是「Continue / Allow」
+    if "consent" in cur_url:
+        try:
+            submits = page.locator("button[type=submit], [role=button][type=submit]")
+            n = await submits.count()
+            for i in range(n):
+                btn = submits.nth(i)
+                try:
+                    if not await btn.is_visible():
+                        continue
+                    txt = ""
+                    try:
+                        txt = (await btn.inner_text()).strip().lower()
+                    except Exception:
+                        pass
+                    # 排除明显的拒绝按钮
+                    if any(bad in txt for bad in ("cancel", "deny", "reject", "取消", "拒绝")):
+                        continue
+                    print(f"[codex-oauth] {cur_url.rsplit('/', 1)[-1]}: 点击首个 submit 按钮 text={txt!r}")
+                    if await _click_with_force_fallback(btn):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # 通用：按文本匹配
+    try:
+        candidates = page.locator(
+            "button[type=submit], button, [role=button], input[type=submit], a"
+        ).filter(has_text=pattern)
+        n = await candidates.count()
+    except Exception:
+        return False
+    for i in range(n):
+        cand = candidates.nth(i)
+        try:
+            if not await cand.is_visible():
+                continue
+            txt = (await cand.inner_text()).strip().lower()
+            if any(bad in txt for bad in ("cancel", "deny", "reject", "取消", "拒绝", "返回", "use a different")):
+                continue
+            print(f"[codex-oauth] 点击 consent 按钮 text={txt!r}")
+            if await _click_with_force_fallback(cand):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _save_debug(page, label: str):
+    """超时时落截图 + HTML，便于排查。"""
+    try:
+        from datetime import datetime
+        out_dir = (Path(__file__).resolve().parent.parent / "output" / "debug")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time())
+        png = out_dir / f"{label}-{stamp}.png"
+        html = out_dir / f"{label}-{stamp}.html"
+        try:
+            await page.screenshot(path=str(png), full_page=True)
+        except Exception:
+            pass
+        try:
+            html.write_text(await page.content(), encoding="utf-8")
+        except Exception:
+            pass
+        print(f"[codex-oauth] debug 已存：{png.name} / {html.name}  url={page.url}")
+    except Exception as e:
+        print(f"[codex-oauth] 落 debug 失败：{e}")
+
+
+EMAIL_INPUT_SELECTOR = (
+    "input[type=email], input[name=email], "
+    "input[autocomplete=email], input[autocomplete=username], "
+    "input[placeholder*=mail i]"
+)
+
+
+async def _auth_page_text(page) -> str:
+    try:
+        return await page.evaluate("() => (document.body && document.body.innerText) || ''")
+    except Exception:
+        return ""
+
+
+async def _has_auth_soft_error(page) -> bool:
+    text = (await _auth_page_text(page)).lower()
+    return any(
+        marker in text
+        for marker in (
+            "operation timed out",
+            "操作超时",
+            "something went wrong",
+            "出了点问题",
+            "糟糕",
+            "route error",
+        )
+    )
+
+
+async def _wait_for_oauth_progress(page, callback_future, old_url: str, timeout_seconds: float = 5.0) -> bool:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while asyncio.get_event_loop().time() < deadline:
+        if callback_future.done():
+            return True
+        cur = page.url or ""
+        if cur != old_url or "auth.openai.com/log-in" not in cur:
+            return True
+        if await _has_auth_soft_error(page):
+            return False
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def _js_submit_login_email(page, account_email: str) -> bool:
+    try:
+        return bool(await page.evaluate(
+            """({ email, selector }) => {
+                const input = document.querySelector(selector);
+                if (!input) return false;
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+                if (setter) setter.call(input, email);
+                else input.value = email;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+                const form = input.form || input.closest("form");
+                const button = form?.querySelector(
+                    "button[type=submit][name='intent'][value='email'], button[type=submit]"
+                );
+                if (button) {
+                    button.click();
+                    return true;
+                }
+                if (form?.requestSubmit) {
+                    form.requestSubmit();
+                    return true;
+                }
+                if (form?.submit) {
+                    form.submit();
+                    return true;
+                }
+                return false;
+            }""",
+            {"email": account_email, "selector": EMAIL_INPUT_SELECTOR},
+        ))
+    except Exception:
+        return False
+
+
+async def _fill_email_on_login(page, account_email: str) -> bool:
+    try:
+        loc = page.locator(EMAIL_INPUT_SELECTOR).first
+        if await loc.count() == 0 or not await loc.is_visible():
+            return False
+        try:
+            await loc.click(timeout=2000)
+        except Exception:
+            pass
+        cur = ""
+        try:
+            cur = await loc.input_value(timeout=1500)
+        except Exception:
+            pass
+        if cur.strip().lower() != account_email.lower():
+            try:
+                await loc.fill("", timeout=1500)
+            except Exception:
+                pass
+            await loc.fill(account_email, timeout=2500)
+            try:
+                await loc.evaluate(
+                    """(el) => {
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }"""
+                )
+            except Exception:
+                pass
+            print(f"[codex-oauth] log-in: 已填邮箱 {account_email}")
+            await asyncio.sleep(0.3)
+        try:
+            submit = page.locator(
+                "form[action*='log-in'] button[type=submit][name='intent'][value='email'], "
+                "form[action*='log-in'] button[type=submit], "
+                "button[type=submit][name='intent'][value='email']"
+            ).first
+            if await submit.count() and await submit.is_visible():
+                await submit.click(timeout=4000)
+                print("[codex-oauth] log-in: 已点击继续")
+            else:
+                await loc.press("Enter", timeout=1500)
+                print("[codex-oauth] log-in: 已按 Enter 提交")
+        except Exception:
+            try:
+                await loc.press("Enter", timeout=1500)
+                print("[codex-oauth] log-in: 已按 Enter 提交")
+            except Exception:
+                if await _js_submit_login_email(page, account_email):
+                    print("[codex-oauth] log-in: 已用 JS requestSubmit 提交")
+                else:
+                    return False
+        return True
+    except Exception as e:
+        print(f"[codex-oauth] log-in: 填邮箱失败 {e}")
+        return False
+
+
+async def _fill_otp_code(page, code: str) -> bool:
+    try:
+        boxes = page.locator("input[maxlength='1']")
+        n = await boxes.count()
+        if n >= 6:
+            for i in range(min(6, n)):
+                try:
+                    await boxes.nth(i).fill(code[i] if i < len(code) else "")
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+            print("[codex-oauth] email-verification: 已填入 OTP")
+            return True
+        single = page.locator(
+            "input[name*=code i], input[placeholder*=code i], input[inputmode=numeric], input[type=text]"
+        ).first
+        if await single.count() and await single.is_visible():
+            await single.fill(code)
+            try:
+                await single.press("Enter")
+            except Exception:
+                pass
+            print("[codex-oauth] email-verification: 已填入 OTP（单字段）")
+            return True
+    except Exception as e:
+        print(f"[codex-oauth] OTP 填入失败 {e}")
+    return False
+
+
+async def run_codex_oauth(
+    page,
+    *,
+    account_email: str = "",
+    fetch_code=None,
+    proxy: Optional[str] = None,
+    timeout: float = 180.0,
+) -> Dict[str, Any]:
+    """跑一次 codex OAuth，自动应对 log-in / email-verification / choose-an-account / consent 中间页。
+
+    `fetch_code`: async () -> str，给 OAuth 阶段拉新 OTP（OAuth 走的是另一封 OTP 邮件）。
+    """
+    if fetch_code is None:
+        raise ValueError("run_codex_oauth 需要 fetch_code（与 step4 的 OTP 拿码 callable 一样）")
+
+    verifier, challenge = make_pkce()
+    state = secrets.token_urlsafe(16)
+    url = build_authorize_url(state, challenge)
+
+    loop = asyncio.get_event_loop()
+    callback_future: "asyncio.Future[str]" = loop.create_future()
+
+    async def handle_route(route, request):
+        try:
+            if request.url.startswith("http://localhost:1455"):
+                if request.url.startswith(CODEX_REDIRECT_URI):
+                    if not callback_future.done():
+                        callback_future.set_result(request.url)
+                try:
+                    await route.fulfill(
+                        status=200, content_type="text/html; charset=utf-8",
+                        body="<!doctype html><html><body><h2>OAuth 授权完成，可关闭本页。</h2></body></html>",
+                    )
+                except Exception:
+                    try:
+                        await route.abort()
+                    except Exception:
+                        pass
+                return
+            await route.continue_()
+        except Exception:
+            try:
+                await route.continue_()
+            except Exception:
+                pass
+
+    callback_pattern = "http://localhost:1455/**"
+    await page.route(callback_pattern, handle_route)
+
+    callback_url = None
+    try:
+        print(f"[codex-oauth] navigating to authorize URL")
+        try:
+            await page.goto(url, wait_until="commit", timeout=20000)
+        except Exception:
+            pass
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+        deadline = loop.time() + timeout
+        last_url = ""
+        last_action_at = 0.0
+        action_cooldown = 4.0
+        otp_filled = False
+        login_attempts = 0
+        last_login_url = ""
+        consent_clicks = 0
+        authorize_restarts = 0
+
+        while loop.time() < deadline:
+            try:
+                callback_url = await asyncio.wait_for(asyncio.shield(callback_future), timeout=1.5)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            cur = page.url or ""
+            if cur != last_url:
+                print(f"[codex-oauth] 当前 url={cur}")
+                last_url = cur
+                last_action_at = 0.0
+
+            if "error=" in cur and "/oauth/" in cur:
+                await _save_debug(page, "codex-oauth-error-page")
+                raise RuntimeError(f"OpenAI OAuth 错误页：{cur}")
+
+            now = loop.time()
+            if now - last_action_at < action_cooldown:
+                continue
+
+            # /log-in 页：填邮箱回车
+            if "auth.openai.com/log-in" in cur:
+                if account_email:
+                    if await _has_auth_soft_error(page) and authorize_restarts < 2:
+                        authorize_restarts += 1
+                        login_attempts = 0
+                        last_login_url = ""
+                        consent_clicks = 0
+                        print(f"[codex-oauth] log-in: 检测到超时/错误页，重开 authorize URL ({authorize_restarts}/2)")
+                        try:
+                            await page.goto(url, wait_until="commit", timeout=12000)
+                            last_action_at = now
+                            await asyncio.sleep(1.0)
+                            continue
+                        except Exception as e:
+                            print(f"[codex-oauth] log-in: 重开 authorize 失败 {e}")
+
+                    if cur != last_login_url:
+                        login_attempts = 0
+                        last_login_url = cur
+
+                    if login_attempts < 3:
+                        login_attempts += 1
+                        print(f"[codex-oauth] log-in: 第 {login_attempts}/3 次提交邮箱")
+                        if await _fill_email_on_login(page, account_email):
+                            progressed = await _wait_for_oauth_progress(page, callback_future, cur, timeout_seconds=5.0)
+                            if progressed:
+                                last_action_at = 0.0
+                            else:
+                                last_action_at = now - action_cooldown
+                                print("[codex-oauth] log-in: 提交后仍停留在登录页，准备重试")
+                            continue
+
+                    if authorize_restarts < 2:
+                        authorize_restarts += 1
+                        login_attempts = 0
+                        last_login_url = ""
+                        consent_clicks = 0
+                        print(f"[codex-oauth] log-in: 仍未前进，重开 authorize URL ({authorize_restarts}/2)")
+                        try:
+                            await page.goto(url, wait_until="commit", timeout=12000)
+                            last_action_at = now
+                            await asyncio.sleep(1.0)
+                            continue
+                        except Exception as e:
+                            print(f"[codex-oauth] log-in: 重开 authorize 失败 {e}")
+
+                last_action_at = now
+                continue
+
+            # /email-verification：拿新 OTP 填进去
+            if "email-verification" in cur and not otp_filled:
+                print("[codex-oauth] email-verification 页，拉一个新 OTP...")
+                try:
+                    code = await fetch_code()
+                except Exception as e:
+                    await _save_debug(page, "codex-oauth-otp-fetch-fail")
+                    raise RuntimeError(f"OAuth 阶段拿 OTP 失败：{e}") from e
+                if not code:
+                    raise RuntimeError("OAuth 阶段没拿到 OTP")
+                if await _fill_otp_code(page, code):
+                    otp_filled = True
+                    last_action_at = now
+                    continue
+
+            # choose-an-account / consent：点同意
+            if "choose-an-account" in cur or "consent" in cur:
+                if consent_clicks < 5 and await _try_click_consent(page, account_email):
+                    consent_clicks += 1
+                    last_action_at = now
+                    continue
+
+            # 兜底：还在 auth 域但状态不明，尝试通用同意按钮
+            if ("auth.openai.com" in cur or "auth0.openai.com" in cur) and "log-in" not in cur and consent_clicks < 5:
+                if await _try_click_consent(page, account_email):
+                    consent_clicks += 1
+                    last_action_at = now
+                    continue
+
+        if callback_url is None:
+            await _save_debug(page, "codex-oauth-callback-timeout")
+            raise RuntimeError(
+                f"等 OAuth 回调超时（{timeout}s）。已落 debug 截图。"
+                f"当前 URL: {page.url}。"
+                f"  login_attempts={login_attempts}  authorize_restarts={authorize_restarts}"
+                f"  otp_filled={otp_filled}  consent_clicks={consent_clicks}"
+            )
+    finally:
+        try:
+            await page.unroute(callback_pattern, handle_route)
+        except Exception:
+            pass
+
+    parsed = urllib.parse.urlparse(callback_url)
+    params = dict(urllib.parse.parse_qsl(parsed.query))
+
+    if "error" in params:
+        raise RuntimeError(f"OAuth callback 报错：{params}")
+    if params.get("state") != state:
+        raise RuntimeError(f"OAuth state 不匹配，可能被劫持")
+    if "code" not in params:
+        raise RuntimeError(f"OAuth callback 缺 code: {params}")
+
+    print("[codex-oauth] callback received, exchanging code for tokens...")
+    token_resp = await loop.run_in_executor(
+        None, lambda: exchange_code(params["code"], verifier, proxy=proxy)
+    )
+
+    creds = build_codex_credentials(token_resp, fallback_email=account_email)
+    print(f"[codex-oauth] ✓ got credentials  plan={creds['plan_type']}  "
+          f"acct={creds['chatgpt_account_id'][:8]}…  refresh_token={'yes' if creds['refresh_token'] else 'NO'}")
+    return creds

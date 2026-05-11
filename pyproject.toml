@@ -1,0 +1,11 @@
+[project]
+name = "chatgpt-quick-register"
+version = "1.0.0"
+description = "Playwright-driven ChatGPT register-only-to-step-6 + capture /api/auth/session"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.45",
+]
+
+[project.scripts]
+qr-register = "register:main"
