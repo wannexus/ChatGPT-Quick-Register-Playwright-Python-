@@ -18,6 +18,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 import urllib.error
@@ -700,95 +701,373 @@ PHONE_CODE_INPUT = (
 )
 
 
-# 5sim 国家名 → E.164 国际区号映射（常用国家）
-_COUNTRY_DIAL_MAP = {
-    "vietnam": "84",
-    "indonesia": "62",
-    "thailand": "66",
-    "england": "44",
-    "usa": "1",
-    "japan": "81",
-    "germany": "49",
-    "france": "33",
-    "spain": "34",
-    "italy": "39",
-    "canada": "1",
-    "australia": "61",
-    "brazil": "55",
-    "india": "91",
-    "mexico": "52",
-    "philippines": "63",
-    "poland": "48",
-    "romania": "40",
-    "sweden": "46",
-    "ukraine": "380",
-    "russia": "7",
-    "china": "86",
+# ---------------------------------------------------------------------------
+# 国家 / E.164 国际区号映射
+# ---------------------------------------------------------------------------
+# 5sim 返回的 country 是英文 slug（poland / greece / england ...），而 OpenAI add-phone
+# 页的国家控件是 React Aria Select：
+#   * 可见值形如「美国 (+1)」= 本地化国名 + 区号（随页面语言变化）
+#   * 隐藏的原生 <select> option value 是 ISO-3166 alpha-2（AL / PL / GR ...），
+#     option 文本是本地化国名（中文页面下是「波兰」，既无英文名也无区号数字）
+# 所以只能按「号码真实区号 → ISO → option value」定位国家。旧实现按英文国名/文本匹配，
+# 中文页面必然全部失配，然后落到「兜底 index=1」= 阿尔巴尼亚 (+355)，
+# 于是页面区号与 5sim 号码区号不一致（买到的号码和页面提交的号码不是同一个）。
+
+_ISO_DIAL: Dict[str, str] = {
+    # 北美 NANP（+1）
+    "US": "1", "CA": "1", "PR": "1", "DO": "1", "JM": "1", "TT": "1", "BB": "1",
+    "BS": "1", "AG": "1", "GD": "1", "LC": "1", "VC": "1", "KN": "1", "DM": "1",
+    "BM": "1", "TC": "1", "AS": "1", "GU": "1", "MP": "1",
+    # 欧洲
+    "RU": "7", "KZ": "7", "GR": "30", "NL": "31", "BE": "32", "FR": "33",
+    "ES": "34", "HU": "36", "IT": "39", "VA": "39", "RO": "40", "CH": "41",
+    "AT": "43", "GB": "44", "GG": "44", "IM": "44", "JE": "44", "DK": "45",
+    "SE": "46", "NO": "47", "SJ": "47", "PL": "48", "DE": "49", "GI": "350",
+    "PT": "351", "LU": "352", "IE": "353", "IS": "354", "AL": "355", "MT": "356",
+    "CY": "357", "FI": "358", "AX": "358", "BG": "359", "LT": "370", "LV": "371",
+    "EE": "372", "MD": "373", "AM": "374", "BY": "375", "AD": "376", "MC": "377",
+    "SM": "378", "UA": "380", "RS": "381", "ME": "382", "XK": "383", "HR": "385",
+    "SI": "386", "BA": "387", "MK": "389", "CZ": "420", "SK": "421", "LI": "423",
+    "FO": "298", "GL": "299", "TR": "90", "GE": "995", "AZ": "994",
+    # 亚洲 / 中东 / 中亚
+    "CN": "86", "HK": "852", "MO": "853", "TW": "886", "JP": "81", "KR": "82",
+    "KP": "850", "MN": "976", "IN": "91", "PK": "92", "AF": "93", "LK": "94",
+    "MM": "95", "NP": "977", "BD": "880", "BT": "975", "MV": "960", "TH": "66",
+    "LA": "856", "KH": "855", "VN": "84", "MY": "60", "SG": "65", "BN": "673",
+    "ID": "62", "PH": "63", "TL": "670", "IR": "98", "IQ": "964", "SA": "966",
+    "YE": "967", "OM": "968", "PS": "970", "AE": "971", "IL": "972", "BH": "973",
+    "QA": "974", "KW": "965", "JO": "962", "LB": "961", "SY": "963", "UZ": "998",
+    "TM": "993", "TJ": "992", "KG": "996",
+    # 非洲
+    "EG": "20", "LY": "218", "TN": "216", "DZ": "213", "MA": "212", "EH": "212",
+    "SD": "249", "SS": "211", "ET": "251", "ER": "291", "DJ": "253", "SO": "252",
+    "KE": "254", "TZ": "255", "UG": "256", "RW": "250", "BI": "257", "MZ": "258",
+    "ZM": "260", "MG": "261", "RE": "262", "YT": "262", "ZW": "263", "NA": "264",
+    "MW": "265", "LS": "266", "BW": "267", "SZ": "268", "KM": "269", "ZA": "27",
+    "SH": "290", "CV": "238", "ST": "239", "CM": "237", "CF": "236", "TD": "235",
+    "NE": "227", "TG": "228", "BJ": "229", "MR": "222", "ML": "223", "GN": "224",
+    "CI": "225", "BF": "226", "GH": "233", "NG": "234", "GM": "220", "SN": "221",
+    "SL": "232", "LR": "231", "GW": "245", "GA": "241", "CG": "242", "CD": "243",
+    "AO": "244", "GQ": "240", "SC": "248", "MU": "230",
+    # 美洲
+    "MX": "52", "CU": "53", "AR": "54", "BR": "55", "CL": "56", "CO": "57",
+    "VE": "58", "PE": "51", "PA": "507", "CR": "506", "NI": "505", "HN": "504",
+    "SV": "503", "GT": "502", "BZ": "501", "BO": "591", "GY": "592", "EC": "593",
+    "GF": "594", "PY": "595", "MQ": "596", "SR": "597", "UY": "598", "CW": "599",
+    "AW": "297", "HT": "509", "GP": "590", "BL": "590", "MF": "590", "PM": "508",
+    "FK": "500",
+    # 大洋洲
+    "AU": "61", "CX": "61", "CC": "61", "NZ": "64", "PN": "64", "FJ": "679",
+    "PG": "675", "SB": "677", "VU": "678", "NC": "687", "WF": "681", "WS": "685",
+    "KI": "686", "TV": "688", "TO": "676", "PF": "689", "CK": "682", "NU": "683",
+    "MH": "692", "FM": "691", "PW": "680", "NR": "674", "NF": "672",
 }
+
+# 5sim 国家 slug（英文名，去空格/连字符）→ ISO alpha-2。
+# 主要在同一区号对应多国时用于锁定正确国家（+1 / +7 / +44 / +61 / +64 / +212 / +262 / +590 / +599 ...）。
+_FIVESIM_COUNTRY_ISO: Dict[str, str] = {
+    "usa": "US", "unitedstates": "US", "canada": "CA", "puertorico": "PR",
+    "dominicanrepublic": "DO", "jamaica": "JM", "trinidadandtobago": "TT",
+    "bahamas": "BS", "barbados": "BB", "bermuda": "BM", "turksandcaicos": "TC",
+    "england": "GB", "uk": "GB", "unitedkingdom": "GB", "greatbritain": "GB",
+    "scotland": "GB", "wales": "GB", "northernireland": "GB", "gibraltar": "GI",
+    "russia": "RU", "kazakhstan": "KZ", "greece": "GR", "netherlands": "NL",
+    "holland": "NL", "belgium": "BE", "france": "FR", "spain": "ES", "hungary": "HU",
+    "italy": "IT", "romania": "RO", "switzerland": "CH", "austria": "AT",
+    "denmark": "DK", "sweden": "SE", "norway": "NO", "poland": "PL", "germany": "DE",
+    "portugal": "PT", "luxembourg": "LU", "ireland": "IE", "iceland": "IS",
+    "albania": "AL", "malta": "MT", "cyprus": "CY", "finland": "FI", "bulgaria": "BG",
+    "lithuania": "LT", "latvia": "LV", "estonia": "EE", "moldova": "MD",
+    "armenia": "AM", "belarus": "BY", "andorra": "AD", "monaco": "MC",
+    "sanmarino": "SM", "ukraine": "UA", "serbia": "RS", "montenegro": "ME",
+    "croatia": "HR", "slovenia": "SI", "bosnia": "BA",
+    "bosniaandherzegovina": "BA", "macedonia": "MK", "northmacedonia": "MK",
+    "czech": "CZ", "czechia": "CZ", "slovakia": "SK", "liechtenstein": "LI",
+    "georgia": "GE", "azerbaijan": "AZ", "turkey": "TR", "kosovo": "XK",
+    "faroeislands": "FO", "greenland": "GL",
+    "china": "CN", "hongkong": "HK", "macau": "MO", "macao": "MO", "taiwan": "TW",
+    "japan": "JP", "southkorea": "KR", "korea": "KR", "northkorea": "KP",
+    "mongolia": "MN", "india": "IN", "pakistan": "PK", "afghanistan": "AF",
+    "srilanka": "LK", "nepal": "NP", "bangladesh": "BD", "bhutan": "BT",
+    "maldives": "MV", "myanmar": "MM", "thailand": "TH", "laos": "LA",
+    "cambodia": "KH", "vietnam": "VN", "malaysia": "MY", "singapore": "SG",
+    "brunei": "BN", "indonesia": "ID", "philippines": "PH", "timorleste": "TL",
+    "iran": "IR", "iraq": "IQ", "saudiarabia": "SA", "yemen": "YE", "oman": "OM",
+    "palestine": "PS", "uae": "AE", "unitedarabemirates": "AE", "israel": "IL",
+    "bahrain": "BH", "qatar": "QA", "kuwait": "KW", "jordan": "JO", "lebanon": "LB",
+    "syria": "SY", "uzbekistan": "UZ", "turkmenistan": "TM", "tajikistan": "TJ",
+    "kyrgyzstan": "KG",
+    "egypt": "EG", "libya": "LY", "tunisia": "TN", "algeria": "DZ", "morocco": "MA",
+    "westernsahara": "EH", "sudan": "SD", "southsudan": "SS", "ethiopia": "ET",
+    "eritrea": "ER", "djibouti": "DJ", "somalia": "SO", "kenya": "KE",
+    "tanzania": "TZ", "uganda": "UG", "rwanda": "RW", "burundi": "BI",
+    "mozambique": "MZ", "zambia": "ZM", "madagascar": "MG", "reunion": "RE",
+    "mayotte": "YT", "zimbabwe": "ZW", "namibia": "NA", "malawi": "MW",
+    "lesotho": "LS", "botswana": "BW", "swaziland": "SZ", "eswatini": "SZ",
+    "comoros": "KM", "southafrica": "ZA", "sthelena": "SH", "capeverde": "CV",
+    "caboverde": "CV", "saotomeandprincipe": "ST", "cameroon": "CM",
+    "centralafricanrepublic": "CF", "chad": "TD", "niger": "NE", "togo": "TG",
+    "benin": "BJ", "mauritania": "MR", "mali": "ML", "guinea": "GN",
+    "ivorycoast": "CI", "cotedivoire": "CI", "burkinafaso": "BF", "ghana": "GH",
+    "nigeria": "NG", "gambia": "GM", "senegal": "SN", "sierraleone": "SL",
+    "liberia": "LR", "guineabissau": "GW", "gabon": "GA", "congo": "CG",
+    "republicofthecongo": "CG", "democraticrepublicofthecongo": "CD",
+    "congokinshasa": "CD", "angola": "AO", "equatorialguinea": "GQ",
+    "seychelles": "SC", "mauritius": "MU",
+    "mexico": "MX", "cuba": "CU", "argentina": "AR", "brazil": "BR", "chile": "CL",
+    "colombia": "CO", "venezuela": "VE", "peru": "PE", "panama": "PA",
+    "costarica": "CR", "nicaragua": "NI", "honduras": "HN", "elsalvador": "SV",
+    "guatemala": "GT", "belize": "BZ", "bolivia": "BO", "guyana": "GY",
+    "ecuador": "EC", "frenchguiana": "GF", "paraguay": "PY", "martinique": "MQ",
+    "suriname": "SR", "uruguay": "UY", "curacao": "CW", "aruba": "AW", "haiti": "HT",
+    "guadeloupe": "GP", "saintbarthelemy": "BL", "saintmartin": "MF",
+    "saintpierreandmiquelon": "PM", "falklandislands": "FK",
+    "australia": "AU", "newzealand": "NZ", "fiji": "FJ", "papuanewguinea": "PG",
+    "solomonislands": "SB", "vanuatu": "VU", "newcaledonia": "NC",
+    "wallisandfutuna": "WF", "samoa": "WS", "kiribati": "KI", "tuvalu": "TV",
+    "tonga": "TO", "frenchpolynesia": "PF", "cookislands": "CK", "niue": "NU",
+    "marshallislands": "MH", "micronesia": "FM", "palau": "PW", "nauru": "NR",
+    "guam": "GU", "northernmarianaislands": "MP", "americansamoa": "AS",
+    "norfolkisland": "NF",
+}
+
+# 一个区号对应多国时的默认国家（纯按字母序兜底会取到意外国家）
+_DIAL_PREFERRED_ISO: Dict[str, str] = {
+    "1": "US", "7": "RU", "39": "IT", "44": "GB", "47": "NO", "61": "AU",
+    "64": "NZ", "212": "MA", "262": "RE", "358": "FI", "590": "GP", "599": "CW",
+    "850": "KP",
+}
+
+_DIAL_CODES = frozenset(_ISO_DIAL.values())
+
+_DIAL_TO_ISO: Dict[str, str] = {}
+for _iso, _dial in _ISO_DIAL.items():
+    _DIAL_TO_ISO.setdefault(_dial, _iso)
+_DIAL_TO_ISO.update(_DIAL_PREFERRED_ISO)
+del _iso, _dial
+
+_SELECT_VALUE_DIAL_RE = re.compile(r"\(\s*\+\s*(\d{1,3})\s*\)")
+
+
+def _digits(value: Any) -> str:
+    return re.sub(r"\D", "", value if isinstance(value, str) else "")
+
+
+def _norm_country_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower() if isinstance(value, str) else "")
 
 
 def _extract_dial_code(phone: str) -> str:
-    """从 5sim 返回的完整号如 +447350690992 提取国际区号 44。"""
-    p = phone.lstrip("+")
-    # 常见区号 1-3 位
+    """从 5sim 号码（如 +447350690992）提取 E.164 国际区号。
+
+    用完整区号表做最长前缀匹配。旧实现基于一个不完整的表，未命中就「取前 2 位」，
+    会把 +351/+420/+998/+372 这类号码截成错区号（如 +351 → 35），接着国内号码也截错，
+    填进页面的号码就和 5sim 买到的号码不一致。
+    """
+    digits = _digits(phone)
+    if not digits:
+        return ""
     for length in (3, 2, 1):
-        prefix = p[:length]
-        if prefix in _COUNTRY_DIAL_MAP.values():
-            return prefix
-    return p[:2]  # 兜底：取前 2 位
+        if len(digits) >= length and digits[:length] in _DIAL_CODES:
+            return digits[:length]
+    return ""
+
+
+def _iso_for_country(country: str) -> str:
+    """5sim country slug / ISO 代码 → ISO alpha-2（未知返回空串）。"""
+    key = _norm_country_key(country)
+    if not key:
+        return ""
+    iso = _FIVESIM_COUNTRY_ISO.get(key)
+    if iso:
+        return iso
+    if len(key) == 2 and key.upper() in _ISO_DIAL:
+        return key.upper()
+    return ""
+
+
+def _iso_for_phone(phone: str, country_hint: str = "") -> str:
+    """号码实际区号对应的 ISO；country_hint 与区号一致时优先采用该 hint。"""
+    dial = _extract_dial_code(phone)
+    if not dial:
+        return ""
+    hinted = _iso_for_country(country_hint)
+    if hinted and _ISO_DIAL.get(hinted) == dial:
+        return hinted
+    return _DIAL_TO_ISO.get(dial, "")
+
+
+def _match_country_option(options: list, iso: str, dial_code: str, country: str) -> Optional[dict]:
+    """在 option 列表里找与号码区号一致的那一项。
+
+    真实页面 option value 就是 ISO alpha-2，文本是本地化国名，所以第一优先按 value==ISO；
+    其余分支兼容「文本带区号」「文本带英文国名」的实现。匹配不到返回 None，
+    绝不返回任意兜底项——选错国家就等于把号码填到别的区号下提交。
+    """
+    if not isinstance(options, list) or not options:
+        return None
+
+    def value_of(opt: dict) -> str:
+        return (opt.get("value") or "").strip()
+
+    if iso:
+        for opt in options:
+            if isinstance(opt, dict) and value_of(opt).upper() == iso:
+                return opt
+    if dial_code:
+        for opt in options:
+            if isinstance(opt, dict) and _digits(value_of(opt)) == dial_code:
+                return opt
+    slug = _norm_country_key(country)
+    if len(slug) >= 4:
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            hay = _norm_country_key(opt.get("text")) + _norm_country_key(opt.get("label"))
+            if slug and slug in hay:
+                return opt
+    if dial_code:
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            for field in ("text", "label"):
+                if f"+{dial_code}" in re.sub(r"\s+", "", opt.get(field) or ""):
+                    return opt
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            for field in ("text", "label"):
+                if _digits(opt.get(field)) == dial_code:
+                    return opt
+    return None
+
+
+async def _read_locator_value(locator) -> str:
+    """读输入框 value；非字符串（含测试 fixture 的 Mock）一律当空。"""
+    try:
+        value = await locator.evaluate("el => el.value")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+async def _read_selected_country_dial(page) -> str:
+    """读页面当前所选国家的区号（按可信度排序的三个来源）。"""
+    # 1) React Aria Select 的可见值：「美国 (+1)」——React 状态的真实反映
+    try:
+        loc = page.locator("[class*='react-aria-SelectValue']").first
+        if await loc.count():
+            text = await loc.text_content()
+            if isinstance(text, str):
+                found = _SELECT_VALUE_DIAL_RE.search(text)
+                if found:
+                    return found.group(1)
+    except Exception:
+        pass
+    # 2) 电话号码输入框左侧的区号装饰
+    try:
+        loc = page.locator("[class*='inputDecorationCountryCode']").first
+        if await loc.count():
+            text = await loc.text_content()
+            if isinstance(text, str):
+                digits = _digits(text)
+                if digits:
+                    return digits
+    except Exception:
+        pass
+    # 3) 退路：原生 select 当前值（ISO）反查
+    try:
+        sel = page.locator(PHONE_COUNTRY_SELECT).first
+        if await sel.count():
+            value = await _read_locator_value(sel)
+            if value.strip():
+                return _ISO_DIAL.get(value.strip().upper(), "")
+    except Exception:
+        pass
+    return ""
+
+
+async def _click_country_option(page, dial_code: str) -> bool:
+    """弹层点选：原生 select 的 change 没能驱动 React 状态时，按「(+区号)」点选项。"""
+    try:
+        trigger = page.locator("[class*='react-aria-Select'] button[aria-haspopup='listbox']").first
+        if await trigger.count() == 0 or not await trigger.is_visible():
+            return False
+        if not await _click_with_force_fallback(trigger, timeout_ms=3000):
+            return False
+        option = page.locator(f"[role='option']:has-text('(+{dial_code})')").first
+        if await option.count() and await option.is_visible():
+            if await _click_with_force_fallback(option, timeout_ms=3000):
+                await asyncio.sleep(0.2)
+                return True
+    except Exception as e:
+        print(f"[codex-oauth] add-phone: 弹层点选国家失败 {type(e).__name__}")
+    return False
+
+
+async def _verify_selected_country(page, dial_code: str) -> bool:
+    """确认页面显示的区号就是号码区号；不一致绝不继续提交。"""
+    actual = await _read_selected_country_dial(page)
+    if actual == dial_code:
+        print(f"[codex-oauth] add-phone: 页面国家区号 +{actual} 与号码一致")
+        return True
+    print(f"[codex-oauth] add-phone: 页面国家区号 +{actual or '?'} 与号码区号 +{dial_code} 不一致")
+    return False
 
 
 async def _select_phone_country(page, country: str, phone: str) -> bool:
-    """在 add-phone 页选择国家。
+    """在 add-phone 页选中与号码实际区号一致的国家。
 
-    优先匹配 country name（如 "vietnam"），其次匹配国际区号。
+    返回 True 仅当页面显示的区号确实等于号码区号；没有「随便选第一个」兜底，
+    匹配不到就返回 False，由调用方取消订单，避免把号码填到错误区号下提交。
     """
     dial_code = _extract_dial_code(phone)
+    if not dial_code:
+        print(f"[codex-oauth] add-phone: 无法解析号码 ****{phone[-4:]} 的国际区号，不选国家")
+        return False
+    iso = _iso_for_phone(phone, country)
     try:
         sel = page.locator(PHONE_COUNTRY_SELECT).first
-        if await sel.count() == 0:
-            return False
-        if not await sel.is_visible():
+        if await sel.count() == 0 or not await sel.is_visible():
+            print("[codex-oauth] add-phone: 未找到国家选择控件")
             return False
         tag = await sel.evaluate("el => el.tagName.toLowerCase()")
         if tag != "select":
+            print("[codex-oauth] add-phone: 国家控件不是原生 select，改为按区号弹层点选")
+            if await _click_country_option(page, dial_code):
+                return await _verify_selected_country(page, dial_code)
             return False
 
-        # 通过 value 或 text 匹配 country name
         options = await sel.evaluate("""(sel) => {
-            return [...sel.options].map(o => ({
+            return [...sel.options].map((o, i) => ({
+                index: i,
                 value: o.value,
-                text: o.textContent.trim(),
-                label: (o.getAttribute('aria-label') || '').toLowerCase()
+                text: (o.textContent || '').trim(),
+                label: (o.getAttribute('aria-label') || '')
             }));
         }""")
-        country_lower = country.lower()
-        best = None
-        for opt in options:
-            opt_text_lower = opt["text"].lower()
-            opt_label_lower = opt["label"]
-            # 精确匹配 country name
-            if country_lower in opt_text_lower or country_lower in opt_label_lower:
-                best = opt["value"]
-                break
-            # 匹配国际区号（如 "84"、"越南 (+84)"）
-            if dial_code and f"+{dial_code}" in opt_text_lower:
-                if best is None:
-                    best = opt["value"]
+        target = _match_country_option(options, iso, dial_code, country)
+        if target is None:
+            print(f"[codex-oauth] add-phone: 国家列表里没有区号 +{dial_code}"
+                  f"（5sim country={country or 'unknown'}），不提交错号码")
+            if await _click_country_option(page, dial_code):
+                return await _verify_selected_country(page, dial_code)
+            return False
 
-        if best:
-            await sel.select_option(value=best, timeout=3000)
-            print(f"[codex-oauth] add-phone: 已选国家 {country} (value={best})")
+        await sel.select_option(index=int(target["index"]), timeout=3000)
+        print(f"[codex-oauth] add-phone: 已按区号 +{dial_code} 选择国家 "
+              f"(value={target.get('value') or target.get('text')!r})")
+        await asyncio.sleep(0.2)
+        if await _verify_selected_country(page, dial_code):
             return True
-
-        # 兜底：选第一个非默认选项
-        if len(options) > 1:
-            await sel.select_option(index=1, timeout=3000)
-            print(f"[codex-oauth] add-phone: 兜底选国家 index=1")
-            return True
+        # 原生 select 的 change 未驱动 React 状态时，改用弹层点选
+        print("[codex-oauth] add-phone: 原生 select 未生效，改用弹层点选")
+        if await _click_country_option(page, dial_code):
+            return await _verify_selected_country(page, dial_code)
+        return False
     except Exception as e:
-        print(f"[codex-oauth] add-phone: 选择国家失败 {e}")
-    return False
+        print(f"[codex-oauth] add-phone: 选择国家失败 {type(e).__name__}")
+        return False
 
 
 def create_5sim_phone_verifier(
@@ -982,18 +1261,42 @@ def create_5sim_phone_verifier(
         print(f"[codex-oauth] add-phone: 已取得号码 ****{phone[-4:]} 订单={order_id}")
 
         # ── 3) 填写 add-phone 表单 ──
-        # 3a) 选择国家
+        # 3a) 选择国家：必须与号码真实区号一致，否则本号码不发码（宁可不发也不发错号码）
         actual_country = order.country or country
+        dial_code = _extract_dial_code(phone)
+        if not dial_code:
+            await _save_debug(page, "codex-oauth-add-phone-unknown-dial")
+            raise RuntimeError(
+                f"无法从 5sim 号码 ****{phone[-4:]} 解析国际区号"
+                f"（5sim country={actual_country or 'unknown'}）；放弃提交并取消订单"
+            )
         country_ok = await _select_phone_country(page, actual_country, phone)
         if not country_ok:
-            print("[codex-oauth] add-phone: 国家选择未成功，继续尝试填写号码")
+            await _save_debug(page, "codex-oauth-add-phone-country-mismatch")
+            raise RuntimeError(
+                f"add-phone 页未选中与号码 ****{phone[-4:]} 一致的国家"
+                f"（区号 +{dial_code}，5sim country={actual_country or 'unknown'}）；"
+                "放弃提交并取消订单，避免把号码填到错误区号下"
+            )
 
-        # 3b) 填写号码到可见的 tel 输入框（去掉 + 前缀，只填国内部分）
-        phone_national = phone.lstrip("+")
-        # 尝试去除国际区号前缀得到国内号码（但 5sim 返回的通常已是完整号）
-        dial_code = _extract_dial_code(phone)
-        if dial_code and phone_national.startswith(dial_code):
+        # 3b) 填写号码到可见的 tel 输入框（去掉国际区号，只填国内部分）
+        phone_national = _digits(phone)
+        if phone_national.startswith(dial_code):
             phone_national = phone_national[len(dial_code):]
+        if len(phone_national) < 6:
+            await _save_debug(page, "codex-oauth-add-phone-bad-national")
+            raise RuntimeError(
+                f"号码区号拆分异常（区号 +{dial_code}，国内部分 {len(phone_national)} 位）；"
+                "放弃提交并取消订单"
+            )
+
+        page_dial = await _read_selected_country_dial(page)
+        if page_dial and page_dial != dial_code:
+            await _save_debug(page, "codex-oauth-add-phone-dial-mismatch")
+            raise RuntimeError(
+                f"add-phone 页当前国家区号 +{page_dial} 与号码区号 +{dial_code} 不一致；"
+                "放弃提交并取消订单"
+            )
 
         try:
             tel_input = page.locator(PHONE_INPUT_TEL).first
@@ -1003,21 +1306,26 @@ def create_5sim_phone_verifier(
                 ).first
             await tel_input.click(timeout=3000)
             await tel_input.fill("", timeout=2000)
-            await tel_input.fill(phone_national or phone.lstrip("+"), timeout=5000)
+            await tel_input.fill(phone_national, timeout=5000)
             await asyncio.sleep(0.3)
             print("[codex-oauth] add-phone: 已填写临时号码")
         except Exception as e:
             await _save_debug(page, "codex-oauth-add-phone-fill-fail")
             raise RuntimeError(f"填写号码失败：{e}") from e
 
-        # 3c) 填写 E.164 格式到隐藏的 phoneNumber 字段（如果存在）
+        # 3c) 规范化字段 phoneNumber：页面自己会拼 E.164，若与 5sim 号码不一致就覆盖成真实号码，
+        #     否则提交的会是「页面区号 + 国内号码」拼出的错号码（区号不一致的最终表现）。
         try:
             hidden = page.locator(PHONE_INPUT_HIDDEN).first
             if await hidden.count():
-                await hidden.evaluate(f"el => {{ el.value = '{phone}'; "
-                                      "el.dispatchEvent(new Event('input', {bubbles:true})); "
-                                      "el.dispatchEvent(new Event('change', {bubbles:true})); }")
-                print("[codex-oauth] add-phone: 已设置规范化号码字段")
+                current = await _read_locator_value(hidden)
+                if _digits(current) == _digits(phone):
+                    print("[codex-oauth] add-phone: phoneNumber 字段与 5sim 号码一致")
+                else:
+                    await hidden.evaluate(f"el => {{ el.value = '{phone}'; "
+                                          "el.dispatchEvent(new Event('input', {bubbles:true})); "
+                                          "el.dispatchEvent(new Event('change', {bubbles:true})); }")
+                    print("[codex-oauth] add-phone: 已用 5sim 真实号码覆盖 phoneNumber 字段")
         except Exception:
             pass
 
