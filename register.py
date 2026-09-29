@@ -403,6 +403,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=LOCAL_CONFIG.get("fiveSimAcquirePriority") or "rate",
         help="5sim 候选号码按接码率或价格排序",
     )
+    p.add_argument(
+        "--5sim-use-proxy", action=argparse.BooleanOptionalAction,
+        default=_saved_flag("fiveSimUseProxy"),
+        help="5sim API 是否使用浏览器代理；--no-5sim-use-proxy 仅让短信 API 直连",
+    )
     p.add_argument("--ac-check", action="store_true", help="注册/重登成功后检查当前账号 AC token")
     p.add_argument("--ac-check-batch", action="store_true", help="批量检查 MySQL 中所有账号的 token")
     p.add_argument(
@@ -645,8 +650,8 @@ def _build_5sim_phone_verifier(args: argparse.Namespace, *, account_id: int | No
         reuse_pool=pool,
         account_id=account_id,
         account_store=account_store,
-        proxy=args.proxy or None,
-        proxy_insecure=args.proxy_insecure,
+        proxy=(args.proxy or None) if getattr(args, "5sim_use_proxy", True) else None,
+        proxy_insecure=bool(args.proxy_insecure) if getattr(args, "5sim_use_proxy", True) else False,
     )
     return verifier
 

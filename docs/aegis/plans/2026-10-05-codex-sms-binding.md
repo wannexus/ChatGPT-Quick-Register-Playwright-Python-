@@ -118,6 +118,13 @@ Implementation and local acceptance completed:
 - Financial side effects are excluded from tests; bounded purchase retry and existing max price constrain risk.
 - No unauthorized edits to unrelated dirty files; no service restart implied.
 
+## Operational Follow-Up
+
+- The reported settings HTTP 422 came from the running 8765 process retaining the old request schema while serving the updated HTML. Restarting the idle service loaded the current schema; posting the saved SMS options returned HTTP 200 and preserved the stored key and unrelated settings. The page now names invalid fields and identifies an outdated SMS schema instead of displaying only HTTP 422.
+- The later run did invoke the paid purchase endpoint after reaching add-phone; a `502 Bad Gateway` response prevented it from obtaining a number. Read-only profile and inventory checks succeeded through both proxy and direct transport. This evidence does not establish which gateway produced the earlier 502, nor whether an order was created before the failed response.
+- Added `fiveSimUseProxy` / `QR_FIVESIM_USE_PROXY` and CLI `--[no-]5sim-use-proxy`. The default preserves the existing browser-proxy route; disabling the option sends only 5sim API traffic directly. The user can select the route in SMS settings. Buy/reuse gateway failures now state that the request was sent and order history needs reconciliation; no automatic paid replay is introduced.
+- Follow-up verification: 337 unit tests and 22 mocked browser checks; settings payload is exercised through the actual ASGI validation/persistence route against temporary configuration. Proxy routing and gateway errors are covered by focused tests. No new paid order, external OTP or account push was executed by the agent during this diagnosis.
+
 ## Initial Source Evidence
 
 - `register.py`: `_build_5sim_phone_verifier`, `_run_one_codex_push`, `--5sim-*` arguments.

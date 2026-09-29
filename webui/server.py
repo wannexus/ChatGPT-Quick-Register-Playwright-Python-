@@ -278,6 +278,7 @@ async def defaults():
         "fiveSimMaxPrice": cfg.get("fiveSimMaxPrice") or "",
         "fiveSimAcquirePriority": cfg.get("fiveSimAcquirePriority") or "rate",
         "fiveSimCandidateLimit": cfg.get("fiveSimCandidateLimit") or "8",
+        "fiveSimUseProxy": _saved_flag_value(cfg.get("fiveSimUseProxy", "1")),
         "acCheckerBaseUrl": cfg.get("acCheckerBaseUrl") or ac_checker.DEFAULT_BASE_URL,
         "acCheckerPromoId": cfg.get("acCheckerPromoId") or ac_checker.DEFAULT_PROMO_ID,
         "pay153BaseUrl": cfg.get("pay153BaseUrl") or pay153.DEFAULT_BASE_URL,
@@ -336,6 +337,7 @@ class LocalConfigPayload(BaseModel):
     fiveSimMaxPrice: str = ""
     fiveSimAcquirePriority: str = "rate"
     fiveSimCandidateLimit: Optional[int] = 8
+    fiveSimUseProxy: bool = True
     acCheckerBaseUrl: str = ""
     acCheckerPromoId: str = ""
     pay153BaseUrl: str = ""
@@ -1450,6 +1452,14 @@ def _configured_fivesim_api_key(supplied: str = "") -> str:
     return (supplied or "").strip() or str(effective_config().get("fiveSimApiKey") or "").strip()
 
 
+def _fivesim_config() -> dict:
+    cfg = dict(effective_config())
+    if not _saved_flag_value(cfg.get("fiveSimUseProxy", "1")):
+        cfg["proxy"] = ""
+        cfg["proxyInsecure"] = ""
+    return cfg
+
+
 class FiveSimReusePayload(BaseModel):
     apiKey: str = ""
     phone: str = ""
@@ -1466,7 +1476,7 @@ class FiveSimPoolRemovePayload(BaseModel):
 @app.post("/api/5sim/prices")
 async def five_sim_prices(payload: FiveSimPricesPayload):
     """查询 5sim 价格，按接码率降序排列。"""
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         entries = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1505,7 +1515,7 @@ async def five_sim_buy(payload: FiveSimBuyPayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         order = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1544,7 +1554,7 @@ async def five_sim_check(order_id: int, payload: FiveSimApiKeyPayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         order = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1573,7 +1583,7 @@ async def five_sim_cancel(order_id: int, payload: FiveSimApiKeyPayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         order = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1592,7 +1602,7 @@ async def five_sim_finish(order_id: int, payload: FiveSimApiKeyPayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         order = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1611,7 +1621,7 @@ async def five_sim_profile(payload: FiveSimApiKeyPayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     try:
         profile = await asyncio.get_event_loop().run_in_executor(
             None,
@@ -1642,7 +1652,7 @@ async def five_sim_reuse(payload: FiveSimReusePayload):
     api_key = _configured_fivesim_api_key(payload.apiKey)
     if not api_key:
         return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
-    cfg = effective_config()
+    cfg = _fivesim_config()
     pool = num5sim.ActivationPool.load()
     pool.prune_expired()
     try:

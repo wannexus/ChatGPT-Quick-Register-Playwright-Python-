@@ -132,6 +132,15 @@ class FiveSimOAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(error, num5sim.FiveSimError)
         self.assertEqual(buy.call_count, 1)
 
+    async def test_purchase_gateway_error_is_actionable_and_never_replayed(self):
+        buy, _cancel, error = await self.run_verifier(
+            BindingStore(), purchases=[num5sim.FiveSimGatewayError("502 Bad Gateway")], proxy="http://fixture:8080",
+        )
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("请求已发出", str(error))
+        self.assertIn("核对 5sim 订单", str(error))
+        self.assertEqual(buy.call_count, 1)
+
     async def test_pool_capacity_uses_mysql_and_ignores_legacy_use_count(self):
         pool = num5sim.ActivationPool([num5sim.PoolEntry(PHONE, "usa", "any", "openai", successful_uses=99)])
         store = BindingStore()

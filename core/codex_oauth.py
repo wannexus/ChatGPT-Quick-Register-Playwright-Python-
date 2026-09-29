@@ -834,6 +834,11 @@ def create_5sim_phone_verifier(
         try:
             return await loop.run_in_executor(None, lambda: call_factory(proxy, proxy_insecure))
         except Exception as error:
+            if isinstance(error, num5sim.FiveSimGatewayError) and not retry_direct:
+                raise RuntimeError(
+                    "5sim 买号/复用请求已发出，但网关返回 502/504，未取得号码；"
+                    "请先核对 5sim 订单记录再重试，可在短信设置中切换代理/直连"
+                ) from error
             if proxy and retry_direct and not isinstance(error, num5sim.FiveSimError):
                 print(f"[codex-oauth] add-phone: {action} 经代理失败，改直连重试 ({type(error).__name__})")
                 return await loop.run_in_executor(None, lambda: call_factory(None, False))

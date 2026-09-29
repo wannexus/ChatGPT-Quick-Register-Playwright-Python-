@@ -716,6 +716,7 @@
         <label><span>API Key <small id="fsApiKeyStatus">未检测</small></span>
           <input id="fsApiKey" type="password" autocomplete="new-password" placeholder="新密钥；留空保持已保存密钥" />
         </label>
+        <div class="checkrow"><input id="fsUseProxy" type="checkbox" checked /><label for="fsUseProxy">5sim 请求使用浏览器代理</label></div>
         <div class="row2">
           <label><span>服务名</span>
             <select id="fsProduct">
@@ -2269,6 +2270,7 @@ async function init() {
     if (d.fiveSimMaxPrice != null && $("fsMaxPrice")) $("fsMaxPrice").value = d.fiveSimMaxPrice;
     if (d.fiveSimAcquirePriority && $("fsAcquirePriority")) $("fsAcquirePriority").value = d.fiveSimAcquirePriority;
     if (d.fiveSimCandidateLimit && $("fsCandidateLimit")) $("fsCandidateLimit").value = d.fiveSimCandidateLimit;
+    if ($("fsUseProxy")) $("fsUseProxy").checked = d.fiveSimUseProxy !== false;
     if (d.acCheckerBaseUrl) $("acBaseUrl").value = d.acCheckerBaseUrl;
     if (d.acCheckerPromoId) $("acPromoId").value = d.acCheckerPromoId;
     if (d.pay153BaseUrl) $("pay153BaseUrl").value = d.pay153BaseUrl;
@@ -2652,6 +2654,7 @@ async function init() {
       fiveSimMaxPrice: fsMaxPrice.value.trim(),
       fiveSimAcquirePriority: fsAcquirePriority.value || "rate",
       fiveSimCandidateLimit: num($("fsCandidateLimit").value) || 8,
+      fiveSimUseProxy: $("fsUseProxy").checked,
     };
     if (apiKey) payload.fiveSimApiKey = apiKey;
     try {
@@ -2659,7 +2662,20 @@ async function init() {
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (!response.ok || !result.ok) {
+        const details = Array.isArray(result.detail) ? result.detail : [];
+        const outdated = details.some(error => error.type === "extra_forbidden"
+          && String((error.loc || []).at(-1) || "").startsWith("fiveSim"));
+        const labels = {
+          fiveSimApiKey: "API Key", fiveSimCountry: "国家", fiveSimOperator: "运营商",
+          fiveSimProduct: "服务名", fiveSimMaxPrice: "最高限价",
+          fiveSimAcquirePriority: "获取策略", fiveSimCandidateLimit: "候选库存组合上限",
+          fiveSimUseProxy: "短信代理选项",
+        };
+        const fields = [...new Set(details.map(error => labels[(error.loc || []).at(-1)]).filter(Boolean))];
+        throw new Error(outdated ? "服务器仍运行旧版短信设置接口，请重启 WebUI 服务后重试"
+          : result.error || (fields.length ? `${fields.join("、")}格式不正确` : `HTTP ${response.status}`));
+      }
       fsApiKey.value = "";
       fsApiKeyPresent = !!result.fiveSimApiKeyPresent;
       $("fsApiKeyStatus").textContent = result.fiveSimApiKeyPresent ? "已配置（密钥不回显）" : "未配置";

@@ -1,4 +1,4 @@
-async (page) => {
+async (page, baseUrl = "http://127.0.0.1:8765") => {
   const failures = [];
   let checks = 0;
   const check = (condition, name) => {
@@ -7,16 +7,19 @@ async (page) => {
   };
   const requests = [];
   const errors = [];
+  let saveError = null;
   page.on("pageerror", error => errors.push(error.message));
   page.on("dialog", dialog => dialog.accept().catch(() => {}));
   await page.addInitScript(() => {
     window.confirm = () => true;
-    window.alert = () => {};
+    window.__smsAlerts = [];
+    window.alert = message => window.__smsAlerts.push(String(message));
   });
   const defaults = {
     fiveSimApiKeyPresent: true, fiveSimCountry: "vietnam", fiveSimOperator: "custom",
     fiveSimProduct: "openai", fiveSimMaxPrice: "0.5", fiveSimCandidateLimit: "4",
     fiveSimAcquirePriority: "price", emailSource: "manual", codeSource: "manual", authMode: "otp",
+    fiveSimUseProxy: false,
   };
   const account = {id: 7, email: "fixture@example.com", hasAccessToken: true,
     codexPhoneNumberMasked: "••••0001", localValidity: {status: "unexpired"}};
@@ -32,6 +35,10 @@ async (page) => {
     let result = {ok: true, running: false, results: []};
     if (path === "/api/defaults") {
       if (request.method() === "POST") {
+        if (saveError) {
+          await route.fulfill({status: 422, json: {detail: saveError}});
+          return;
+        }
         Object.assign(defaults, body);
         delete defaults.fiveSimApiKey;
         result = {ok: true, fiveSimApiKeyPresent: true};
@@ -57,7 +64,7 @@ async (page) => {
     await response;
   };
   await page.setViewportSize({width: 1440, height: 1000});
-  await page.goto("http://127.0.0.1:8799/");
+  await page.goto(baseUrl + "/");
   await page.locator("#fsApiKeyStatus").filter({hasText: "已配置"}).waitFor({state: "attached"});
   await page.locator("#nav-sms").click();
   check(await page.locator("#view-sms #fivesimPanel").isVisible(), "SMS panel in its own view");
@@ -65,14 +72,25 @@ async (page) => {
   check(await page.locator("#fsApiKey").inputValue() === "", "saved key never echoed");
   check(await page.locator("#fsCountryFilter").inputValue() === "vietnam", "saved country restored");
   check(await page.locator("#fsOperatorFilter").inputValue() === "custom", "custom operator restored");
+  check(!await page.locator("#fsUseProxy").isChecked(), "SMS direct connection restored");
   await waitRequest("/api/5sim/profile", () => page.locator("#fsProfileBtn").click());
   check(requests.findLast(request => request.path === "/api/5sim/profile").body.apiKey === "", "profile uses saved key");
   await waitRequest("/api/5sim/prices", () => page.locator("#fsQueryBtn").click());
   await page.locator("#fsCountryFilter").selectOption("usa");
   await page.locator("#fsOperatorFilter").selectOption("any");
+  saveError = [{type: "extra_forbidden", loc: ["body", "fiveSimCountry"]}];
+  await waitRequest("/api/defaults", () => page.locator("#fsSaveKey").click());
+  await page.waitForFunction(() => window.__smsAlerts.some(message => message.includes("旧版短信设置接口")));
+  check(await page.evaluate(() => window.__smsAlerts.at(-1).includes("重启 WebUI")), "outdated backend has actionable message");
+  saveError = [{type: "int_from_float", loc: ["body", "fiveSimCandidateLimit"]}];
+  await waitRequest("/api/defaults", () => page.locator("#fsSaveKey").click());
+  await page.waitForFunction(() => window.__smsAlerts.some(message => message.includes("候选库存组合上限格式不正确")));
+  check(await page.evaluate(() => window.__smsAlerts.at(-1).includes("候选库存组合上限格式不正确")), "validation identifies the field");
+  saveError = null;
   await waitRequest("/api/defaults", () => page.locator("#fsSaveKey").click());
   const saved = requests.findLast(request => request.path === "/api/defaults" && request.body);
   check(saved.body.fiveSimCountry === "usa", "selected country saved");
+  check(saved.body.fiveSimUseProxy === false, "SMS connection choice saved");
   check(!("fiveSimApiKey" in saved.body), "blank key preserved");
   await page.locator("#fsApiKey").fill("fixture-new-key");
   await waitRequest("/api/defaults", () => page.locator("#fsSaveKey").click());

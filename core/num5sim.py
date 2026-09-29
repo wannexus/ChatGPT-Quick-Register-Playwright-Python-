@@ -44,9 +44,15 @@ class FiveSimBalanceError(FiveSimError):
     """Raised when the 5sim account balance is insufficient."""
 
 
+class FiveSimGatewayError(FiveSimError):
+    """A gateway failed after a request may already have reached the provider."""
+
+
 def _raise_text_error(path: str, text: str) -> None:
     stripped = text.strip()
     lowered = stripped.lower()
+    if "502 bad gateway" in lowered or "504 gateway timeout" in lowered:
+        raise FiveSimGatewayError("5sim 网关返回 502/504，请求结果尚未确认")
     if "no free phones" in lowered:
         raise FiveSimNoFreePhonesError(
             f"5sim 暂无可用号码 path={path}: {stripped}"
@@ -85,6 +91,8 @@ def _get(
                 raise FiveSimError(f"5sim API 返回空白响应 path={path}")
             return json.loads(decoded)
     except urllib.error.HTTPError as e:
+        if e.code in {502, 504}:
+            raise FiveSimGatewayError(f"5sim 网关返回 HTTP {e.code}，请求结果尚未确认") from e
         body = e.read().decode("utf-8", errors="replace")[:500]
         try:
             _raise_text_error(path, body)

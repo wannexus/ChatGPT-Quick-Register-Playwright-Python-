@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,6 +63,45 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("QR_MYSQL_HOST=127.0.0.1", text, "unrelated settings must survive")
         self.assertFalse((self.root / "config.local.json").exists())
+
+    async def test_sms_page_payload_passes_http_validation_and_persists(self):
+        payload = {
+            "fiveSimCountry": "vietnam", "fiveSimOperator": "any", "fiveSimProduct": "openai",
+            "fiveSimMaxPrice": "0.5", "fiveSimAcquirePriority": "price", "fiveSimCandidateLimit": 4,
+            "fiveSimUseProxy": False,
+        }
+        messages = []
+        received = False
+
+        async def receive():
+            nonlocal received
+            if received:
+                return {"type": "http.disconnect"}
+            received = True
+            return {"type": "http.request", "body": json.dumps(payload).encode(), "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+            "scheme": "http", "path": "/api/defaults", "raw_path": b"/api/defaults", "query_string": b"",
+            "headers": [(b"content-type", b"application/json")], "server": ("127.0.0.1", 8765),
+            "client": ("127.0.0.1", 12345), "root_path": "",
+        }
+        self.env_path.write_text("QR_FIVESIM_API_KEY=fixture-secret\nQR_QQ_USER=keep@example.com\n", encoding="utf-8")
+        with patch.dict(os.environ, {}, clear=True), patch.object(local_config, "PROCESS_ENV_KEYS", frozenset()):
+            await server.app(scope, receive, send)
+            settings = local_config.effective_config()
+        status = next(message["status"] for message in messages if message["type"] == "http.response.start")
+        body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["ok"])
+        for key, value in payload.items():
+            self.assertEqual(settings[key], ("1" if value else "") if isinstance(value, bool) else str(value))
+        self.assertEqual(settings["fiveSimApiKey"], "fixture-secret")
+        self.assertEqual(settings["qqUser"], "keep@example.com")
+        self.assertNotIn(b"fixture-secret", body)
 
     async def test_round_trip_recomposes_the_proxy_and_keeps_other_sections(self):
         with patch.dict(os.environ, {}, clear=True):
