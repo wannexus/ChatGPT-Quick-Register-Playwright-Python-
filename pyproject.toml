@@ -5,6 +5,9 @@ description = "Playwright-driven ChatGPT register-only-to-step-6 + capture /api/
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.45",
+    "PyMySQL>=1.1",
+    "cryptography>=42",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]

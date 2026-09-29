@@ -23,10 +23,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
+from core.http_utils import open_url
 
 # ChatGPT/Codex 公开的 OAuth client_id（从用户提供的 access_token JWT 解出）
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -107,7 +109,14 @@ def jwt_payload(token: Optional[str]) -> Dict[str, Any]:
 # 换 token
 # ---------------------------------------------------------------------------
 
-def exchange_code(code: str, code_verifier: str, *, proxy: Optional[str] = None, timeout: float = 30.0) -> Dict[str, Any]:
+def exchange_code(
+    code: str,
+    code_verifier: str,
+    *,
+    proxy: Optional[str] = None,
+    proxy_insecure: bool = False,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
     body = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "client_id": CODEX_CLIENT_ID,
@@ -123,18 +132,20 @@ def exchange_code(code: str, code_verifier: str, *, proxy: Optional[str] = None,
                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     })
 
-    if proxy:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    else:
-        opener = urllib.request.build_opener()
-
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with open_url(req, proxy=proxy, insecure=proxy_insecure, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"OAuth /token HTTP {e.code} {e.reason}: {e.read().decode('utf-8', 'replace')[:300]}") from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"OAuth /token 网络错误: {e.reason}") from e
+        reason = str(e.reason)
+        if proxy and not proxy_insecure and (
+            "CERTIFICATE_VERIFY_FAILED" in reason or "self signed certificate in certificate chain" in reason
+        ):
+            raise RuntimeError(
+                f"OAuth /token 网络错误: {reason}。当前代理看起来在注入 HTTPS 证书，请重试并加上 --proxy-insecure"
+            ) from e
+        raise RuntimeError(f"OAuth /token 网络错误: {reason}") from e
 
     try:
         return json.loads(raw.decode("utf-8", errors="replace"))
@@ -400,13 +411,107 @@ async def _has_auth_soft_error(page) -> bool:
     )
 
 
-async def _wait_for_oauth_progress(page, callback_future, old_url: str, timeout_seconds: float = 5.0) -> bool:
+async def _is_add_phone_page(page) -> bool:
+    cur = page.url or ""
+    if "/add-phone" in cur or "/phone-verification" in cur:
+        return True
+    try:
+        has_form = await page.evaluate(
+            """() => Boolean(
+                document.querySelector('form[action*="/add-phone" i], form[action*="/phone-verification" i], input[name*="phone" i]:not([type="hidden"])')
+            )"""
+        )
+    except Exception:
+        has_form = False
+    if not has_form:
+        return False
+    text = (await _auth_page_text(page)).lower()
+    return any(
+        marker in text
+        for marker in (
+            "add a phone",
+            "provide a phone",
+            "verify your phone",
+            "添加手机",
+            "添加手机号",
+            "添加电话号码",
+            "提供手机",
+            "提供手机号",
+            "验证手机",
+            "验证手机号",
+        )
+    )
+
+
+async def _try_recover_auth_soft_error(page, *, label: str = "auth") -> bool:
+    """Click the OpenAI auth retry button when the page lands on a transient timeout."""
+    if not await _has_auth_soft_error(page):
+        return False
+
+    selectors = [
+        "button[data-dd-action-name='Try again']",
+        "button:has-text('重试')",
+        "button:has-text('Try again')",
+        "[role=button]:has-text('重试')",
+        "[role=button]:has-text('Try again')",
+    ]
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() and await loc.is_visible() and await loc.is_enabled():
+                print(f"[codex-oauth] {label}: 检测到超时/错误页，点击重试恢复")
+                if await _click_with_force_fallback(loc, timeout_ms=3000):
+                    await asyncio.sleep(3.0)
+                    return not await _has_auth_soft_error(page)
+        except Exception:
+            continue
+
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const visible = (el) => {
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden'
+                        && rect.width > 0 && rect.height > 0;
+                };
+                const candidates = [...document.querySelectorAll('button, [role=button]')];
+                const btn = candidates.find((el) => (
+                    visible(el)
+                    && !el.disabled
+                    && el.getAttribute('aria-disabled') !== 'true'
+                    && /重试|try\\s+again/i.test(el.innerText || el.textContent || el.getAttribute('aria-label') || '')
+                ));
+                if (!btn) return false;
+                btn.click();
+                return true;
+            }"""
+        )
+        if clicked:
+            print(f"[codex-oauth] {label}: 用 JS 点击重试恢复")
+            await asyncio.sleep(3.0)
+            return not await _has_auth_soft_error(page)
+    except Exception:
+        pass
+
+    return False
+
+
+async def _wait_for_oauth_progress(page, callback_future, old_url: str, timeout_seconds: float = 12.0) -> bool:
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     while asyncio.get_event_loop().time() < deadline:
         if callback_future.done():
             return True
         cur = page.url or ""
         if cur != old_url or "auth.openai.com/log-in" not in cur:
+            return True
+        if await _has_visible_otp_input(page):
+            return True
+        if await _is_add_phone_page(page):
+            return True
+        if await _has_visible_account_picker(page):
+            return True
+        if not await _has_visible_login_email_input(page):
             return True
         if await _has_auth_soft_error(page):
             return False
@@ -507,6 +612,14 @@ async def _fill_email_on_login(page, account_email: str) -> bool:
         return False
 
 
+async def _has_visible_login_email_input(page) -> bool:
+    try:
+        loc = page.locator(EMAIL_INPUT_SELECTOR).first
+        return bool(await loc.count()) and await loc.is_visible()
+    except Exception:
+        return False
+
+
 async def _fill_otp_code(page, code: str) -> bool:
     try:
         boxes = page.locator("input[maxlength='1']")
@@ -532,8 +645,522 @@ async def _fill_otp_code(page, code: str) -> bool:
             print("[codex-oauth] email-verification: 已填入 OTP（单字段）")
             return True
     except Exception as e:
-        print(f"[codex-oauth] OTP 填入失败 {e}")
+        print(f"[codex-oauth] OTP 填入失败 {type(e).__name__}")
     return False
+
+
+async def _has_visible_otp_input(page) -> bool:
+    try:
+        boxes = page.locator("input[maxlength='1']")
+        if await boxes.count() and await boxes.first.is_visible():
+            return True
+    except Exception:
+        pass
+    try:
+        single = page.locator(
+            "input[name*=code i], input[placeholder*=code i], "
+            "input[autocomplete='one-time-code'], input[inputmode='numeric']"
+        ).first
+        return bool(await single.count()) and await single.is_visible()
+    except Exception:
+        return False
+
+
+async def _has_visible_account_picker(page) -> bool:
+    selectors = (
+        "button[name='session_id']",
+        "button[data-dd-action-name='Select existing session']",
+    )
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() and await loc.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 5sim phone verifier — 用于 add-phone 页自动接码（支持号码复用，最大复用3次）
+# ---------------------------------------------------------------------------
+
+# OpenAI add-phone 页元素选择器（参考 codex-oauth-automation-extension-Ultra9.7）
+PHONE_FORM_SELECTOR = "form[action*='/add-phone' i]"
+PHONE_COUNTRY_SELECT = "form[action*='/add-phone' i] select, select[name*='country' i]"
+PHONE_INPUT_TEL = "form[action*='/add-phone' i] input[type='tel' i]"
+PHONE_INPUT_HIDDEN = "form[action*='/add-phone' i] input[name='phoneNumber']"
+PHONE_SUBMIT_BUTTON = "form[action*='/add-phone' i] button[type='submit']"
+
+# phone-verification 页 OTP 选择器
+PHONE_CODE_INPUT = (
+    "form[action*='/phone-verification' i] input[name='code'], "
+    "input[autocomplete='one-time-code'], "
+    "input[inputmode='numeric']"
+)
+
+
+# 5sim 国家名 → E.164 国际区号映射（常用国家）
+_COUNTRY_DIAL_MAP = {
+    "vietnam": "84",
+    "indonesia": "62",
+    "thailand": "66",
+    "england": "44",
+    "usa": "1",
+    "japan": "81",
+    "germany": "49",
+    "france": "33",
+    "spain": "34",
+    "italy": "39",
+    "canada": "1",
+    "australia": "61",
+    "brazil": "55",
+    "india": "91",
+    "mexico": "52",
+    "philippines": "63",
+    "poland": "48",
+    "romania": "40",
+    "sweden": "46",
+    "ukraine": "380",
+    "russia": "7",
+    "china": "86",
+}
+
+
+def _extract_dial_code(phone: str) -> str:
+    """从 5sim 返回的完整号如 +447350690992 提取国际区号 44。"""
+    p = phone.lstrip("+")
+    # 常见区号 1-3 位
+    for length in (3, 2, 1):
+        prefix = p[:length]
+        if prefix in _COUNTRY_DIAL_MAP.values():
+            return prefix
+    return p[:2]  # 兜底：取前 2 位
+
+
+async def _select_phone_country(page, country: str, phone: str) -> bool:
+    """在 add-phone 页选择国家。
+
+    优先匹配 country name（如 "vietnam"），其次匹配国际区号。
+    """
+    dial_code = _extract_dial_code(phone)
+    try:
+        sel = page.locator(PHONE_COUNTRY_SELECT).first
+        if await sel.count() == 0:
+            return False
+        if not await sel.is_visible():
+            return False
+        tag = await sel.evaluate("el => el.tagName.toLowerCase()")
+        if tag != "select":
+            return False
+
+        # 通过 value 或 text 匹配 country name
+        options = await sel.evaluate("""(sel) => {
+            return [...sel.options].map(o => ({
+                value: o.value,
+                text: o.textContent.trim(),
+                label: (o.getAttribute('aria-label') || '').toLowerCase()
+            }));
+        }""")
+        country_lower = country.lower()
+        best = None
+        for opt in options:
+            opt_text_lower = opt["text"].lower()
+            opt_label_lower = opt["label"]
+            # 精确匹配 country name
+            if country_lower in opt_text_lower or country_lower in opt_label_lower:
+                best = opt["value"]
+                break
+            # 匹配国际区号（如 "84"、"越南 (+84)"）
+            if dial_code and f"+{dial_code}" in opt_text_lower:
+                if best is None:
+                    best = opt["value"]
+
+        if best:
+            await sel.select_option(value=best, timeout=3000)
+            print(f"[codex-oauth] add-phone: 已选国家 {country} (value={best})")
+            return True
+
+        # 兜底：选第一个非默认选项
+        if len(options) > 1:
+            await sel.select_option(index=1, timeout=3000)
+            print(f"[codex-oauth] add-phone: 兜底选国家 index=1")
+            return True
+    except Exception as e:
+        print(f"[codex-oauth] add-phone: 选择国家失败 {e}")
+    return False
+
+
+def create_5sim_phone_verifier(
+    api_key: str,
+    country: str = "any",
+    operator: str = "any",
+    product: str = "openai",
+    *,
+    max_price: float | None = None,
+    candidate_limit: int = 8,
+    acquire_priority: str = "rate",
+    reuse_pool: "num5sim.ActivationPool | None" = None,
+    account_id: int | None = None,
+    account_store=None,
+    max_accounts_per_phone: int = 3,
+    max_buy_attempts: int = 3,
+    poll_interval: float = 5.0,
+    poll_timeout: float = 120.0,
+    proxy: Optional[str] = None,
+    proxy_insecure: bool = False,
+):
+    """创建一个 phone_verifier callable，用 5sim 自动完成 OpenAI add-phone 流程。
+
+    流程：
+    1. 优先从复用池中查找可复用号码，调用 5sim reuse API
+    2. 无可用号码时，新购一个（带 reuse=1 参数优先服务器端复用）
+    3. 填写 OpenAI add-phone 表单（国家选择 + 号码）
+    4. 轮询 SMS → 填入验证码
+    5. add-phone 页面接受 OTP 后把手机号原子绑定到当前 MySQL 账号；复用池仅存订单元数据
+
+    用法：
+        pool = num5sim.ActivationPool.load()
+        verifier = create_5sim_phone_verifier(api_key="...", country="vietnam", reuse_pool=pool)
+        creds = await run_codex_oauth(page, ..., phone_verifier=verifier)
+        pool.save()
+    """
+    from core import num5sim
+
+    buy_limit = max(1, int(max_buy_attempts))
+
+    async def run_5sim(call_factory, *, action: str, retry_direct: bool = True):
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(None, lambda: call_factory(proxy, proxy_insecure))
+        except Exception as error:
+            if proxy and retry_direct and not isinstance(error, num5sim.FiveSimError):
+                print(f"[codex-oauth] add-phone: {action} 经代理失败，改直连重试 ({type(error).__name__})")
+                return await loop.run_in_executor(None, lambda: call_factory(None, False))
+            raise
+
+    @asynccontextmanager
+    async def selected_order():
+        if account_id is None or account_store is None:
+            raise RuntimeError("自动 5sim 接码需要 MySQL 账号绑定上下文")
+        current = await asyncio.get_running_loop().run_in_executor(None, account_store.get_account, int(account_id))
+        if not current:
+            raise RuntimeError("MySQL 账号不存在；不购买临时号码")
+        if current.get("codexPhoneNumber"):
+            raise RuntimeError("该账号已有手机号绑定；请核对账号，不重复分配临时号码")
+        loop = asyncio.get_running_loop()
+        excluded_phones: set[str] = set()
+        buy_attempts = 0
+        print(f"[codex-oauth] add-phone: 开始 5sim 自动接码  proxy={'set' if proxy else 'NOT SET'}  proxy_insecure={proxy_insecure}")
+
+        async def reserve(phone):
+            slot = account_store.reserve_codex_phone(int(account_id), phone,
+                                                     max_accounts=max_accounts_per_phone)
+            entering = loop.run_in_executor(None, slot.__enter__)
+            try:
+                bind = await asyncio.shield(entering)
+            except asyncio.CancelledError:
+                try:
+                    await entering
+                finally:
+                    await loop.run_in_executor(None, slot.__exit__, None, None, None)
+                raise
+            if bind is None:
+                await loop.run_in_executor(None, slot.__exit__, None, None, None)
+                return None, None
+            return slot, bind
+
+        # ── 1) 优先复用MySQL尚未达到账号上限的号码 ──
+        async def buy_fresh_number() -> Any:
+            nonlocal buy_attempts
+
+            async def attempt_buy(country_value: str, operator_value: str):
+                nonlocal buy_attempts
+                if buy_attempts >= buy_limit:
+                    raise RuntimeError(f"已达到每次手机号验证最多购买 {buy_limit} 个 5sim 订单的安全上限")
+                buy_attempts += 1
+                print(f"[codex-oauth] add-phone: 购买号码 country={country_value} operator={operator_value} product={product} attempt={buy_attempts}/{buy_limit}")
+                return await run_5sim(
+                    lambda call_proxy, call_proxy_insecure: num5sim.buy_activation(
+                        api_key=api_key, country=country_value, operator=operator_value,
+                        product=product, max_price=max_price, enable_reuse=not excluded_phones,
+                        proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                    ),
+                    action=f"5sim 购买号码 {country_value}/{operator_value}",
+                    retry_direct=False,
+                )
+
+            try:
+                return await attempt_buy(country, operator)
+            except num5sim.FiveSimNoFreePhonesError as buy_error:
+                candidates = await run_5sim(
+                    lambda call_proxy, call_proxy_insecure: num5sim.find_buy_candidates(
+                        product=product, country=country, operator=operator,
+                        max_price=max_price, proxy=call_proxy,
+                        proxy_insecure=call_proxy_insecure, limit=max(1, candidate_limit),
+                        priority=acquire_priority,
+                    ),
+                    action="5sim 查询候选库存",
+                )
+                for candidate in candidates:
+                    try:
+                        return await attempt_buy(candidate.country, candidate.operator)
+                    except num5sim.FiveSimNoFreePhonesError:
+                        continue
+                raise RuntimeError("5sim 无可用号码或已达到候选购买上限") from buy_error
+
+        # ── 1b) 新购号码时也以同一有界函数获取号码 ──
+        order = None
+        slot = None
+        bind = None
+        # The reuse endpoint has no price ceiling; use capped purchases when configured.
+        if reuse_pool is not None and max_price is None:
+            while True:
+                reusable = reuse_pool.find_usable(
+                    country=country if country != "any" else "",
+                    operator=operator if operator != "any" else "",
+                    product=product,
+                    exclude_phones=excluded_phones,
+                )
+                if not reusable:
+                    break
+                slot, bind = await reserve(reusable.phone)
+                if slot is None:
+                    excluded_phones.add(reusable.phone)
+                    continue
+                print(f"[codex-oauth] add-phone: 尝试复用号码 ****{reusable.phone[-4:]}")
+                try:
+                    order = await run_5sim(
+                        lambda call_proxy, call_proxy_insecure: num5sim.reuse_number(
+                            api_key=api_key, phone=reusable.phone, product=product,
+                            proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                        ),
+                        action="5sim 复用号码",
+                        retry_direct=False,
+                    )
+                    if order.phone != reusable.phone:
+                        raise RuntimeError("5sim 复用返回了不同号码；当前账号跳过")
+                    break
+                except BaseException as error:
+                    await loop.run_in_executor(None, slot.__exit__, None, None, None)
+                    slot = None
+                    excluded_phones.add(reusable.phone)
+                    order = None
+                    if not isinstance(error, num5sim.FiveSimNoFreePhonesError):
+                        raise
+
+        # ── 2) 无可复用号码则新购 ──
+        while order is None:
+            order = await buy_fresh_number()
+            slot, bind = await reserve(order.phone)
+            if slot is None:
+                excluded_phones.add(order.phone)
+                print(f"[codex-oauth] add-phone: 号码 ****{order.phone[-4:]} 已满额，取消订单并换号")
+                await run_5sim(
+                    lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
+                        api_key=api_key, order_id=order.id, proxy=call_proxy,
+                        proxy_insecure=call_proxy_insecure,
+                    ), action="取消满额号码订单",
+                )
+                order = None
+
+        try:
+            yield order, bind
+        finally:
+            await loop.run_in_executor(None, slot.__exit__, None, None, None)
+
+    async def submit_order(page, order, bind_verified_phone):
+        loop = asyncio.get_running_loop()
+
+        phone = order.phone
+        order_id = order.id
+        print(f"[codex-oauth] add-phone: 已取得号码 ****{phone[-4:]} 订单={order_id}")
+
+        # ── 3) 填写 add-phone 表单 ──
+        # 3a) 选择国家
+        actual_country = order.country or country
+        country_ok = await _select_phone_country(page, actual_country, phone)
+        if not country_ok:
+            print("[codex-oauth] add-phone: 国家选择未成功，继续尝试填写号码")
+
+        # 3b) 填写号码到可见的 tel 输入框（去掉 + 前缀，只填国内部分）
+        phone_national = phone.lstrip("+")
+        # 尝试去除国际区号前缀得到国内号码（但 5sim 返回的通常已是完整号）
+        dial_code = _extract_dial_code(phone)
+        if dial_code and phone_national.startswith(dial_code):
+            phone_national = phone_national[len(dial_code):]
+
+        try:
+            tel_input = page.locator(PHONE_INPUT_TEL).first
+            if await tel_input.count() == 0 or not await tel_input.is_visible():
+                tel_input = page.locator(
+                    "input[type='tel' i], input:not([type='hidden']):not([type='submit']):not([type='checkbox'])"
+                ).first
+            await tel_input.click(timeout=3000)
+            await tel_input.fill("", timeout=2000)
+            await tel_input.fill(phone_national or phone.lstrip("+"), timeout=5000)
+            await asyncio.sleep(0.3)
+            print("[codex-oauth] add-phone: 已填写临时号码")
+        except Exception as e:
+            await _save_debug(page, "codex-oauth-add-phone-fill-fail")
+            raise RuntimeError(f"填写号码失败：{e}") from e
+
+        # 3c) 填写 E.164 格式到隐藏的 phoneNumber 字段（如果存在）
+        try:
+            hidden = page.locator(PHONE_INPUT_HIDDEN).first
+            if await hidden.count():
+                await hidden.evaluate(f"el => {{ el.value = '{phone}'; "
+                                      "el.dispatchEvent(new Event('input', {bubbles:true})); "
+                                      "el.dispatchEvent(new Event('change', {bubbles:true})); }")
+                print("[codex-oauth] add-phone: 已设置规范化号码字段")
+        except Exception:
+            pass
+
+        # 3d) 点击提交按钮
+        clicked = False
+        for sel in [PHONE_SUBMIT_BUTTON,
+                     "button[type='submit']",
+                     "button:has-text('Send code' i)",
+                     "button:has-text('发送验证码' i)",
+                     "button:has-text('Continue' i)",
+                     "button:has-text('继续' i)"]:
+            try:
+                btn = page.locator(sel).first
+                if await btn.count() and await btn.is_visible():
+                    if await _click_with_force_fallback(btn, timeout_ms=4000):
+                        clicked = True
+                        print(f"[codex-oauth] add-phone: 已点击 {sel}")
+                        break
+            except Exception:
+                continue
+        if not clicked:
+            await _save_debug(page, "codex-oauth-add-phone-no-submit")
+            raise RuntimeError("找不到「发送验证码」按钮")
+
+        # ── 4) 轮询等待 SMS ──
+        print(f"[codex-oauth] add-phone: 等待 5sim SMS（最多 {poll_timeout}s）...")
+        deadline = loop.time() + poll_timeout
+        sms_code = None
+        while loop.time() < deadline:
+            try:
+                order = await run_5sim(
+                    lambda call_proxy, call_proxy_insecure: num5sim.check_order(
+                        api_key=api_key,
+                        order_id=order_id,
+                        proxy=call_proxy,
+                        proxy_insecure=call_proxy_insecure,
+                    ),
+                    action="5sim 查询订单",
+                )
+            except Exception as e:
+                print(f"[codex-oauth] add-phone: 5sim check 异常 {type(e).__name__}")
+                await asyncio.sleep(poll_interval)
+                continue
+
+            sms_code = order.code
+            if sms_code:
+                print("[codex-oauth] add-phone: 收到短信验证码")
+                break
+            print(f"[codex-oauth] add-phone: 状态={order.status} 尚无 SMS，{poll_interval}s 后重试...")
+            await asyncio.sleep(poll_interval)
+
+        if not sms_code:
+            try:
+                await run_5sim(
+                    lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
+                        api_key=api_key,
+                        order_id=order_id,
+                        proxy=call_proxy,
+                        proxy_insecure=call_proxy_insecure,
+                    ),
+                    action="5sim 取消订单",
+                )
+            except Exception:
+                pass
+            await _save_debug(page, "codex-oauth-5sim-sms-timeout")
+            raise RuntimeError(f"5sim 等待 SMS 超时（{poll_timeout}s），订单 {order_id} 已取消")
+
+        # ── 5) 填写 OTP ──
+        if not await _fill_otp_code(page, sms_code):
+            raise RuntimeError("填写手机验证码 OTP 失败")
+
+        print("[codex-oauth] add-phone: OTP 已填入，等待页面继续")
+        accepted = False
+        for _ in range(24):
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=2000)
+                if (not await _is_add_phone_page(page)
+                        and not await _has_visible_otp_input(page)
+                        and not await _has_auth_soft_error(page)
+                        and "/error" not in (page.url or "") and "error=" not in (page.url or "")):
+                    accepted = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        if not accepted:
+            raise RuntimeError("手机验证码提交后页面未离开验证步骤；号码未绑定")
+        try:
+            binding = loop.run_in_executor(None, bind_verified_phone)
+            try:
+                claim = await asyncio.shield(binding)
+            except asyncio.CancelledError:
+                # Finish the durable write before the reservation connection closes.
+                await binding
+                raise
+        except Exception as bind_error:
+            # OTP 可能已生效； never assign this number elsewhere until MySQL reconciliation.
+            if reuse_pool is not None:
+                reuse_pool.remove(phone, product)
+                reuse_pool.save()
+            raise RuntimeError("OTP 已被页面接受，但 MySQL 手机号绑定确认失败；流程停止，需先核对账号记录") from bind_error
+        if not claim.get("ok"):
+            raise RuntimeError("OTP 已接受，但 MySQL 未确认手机号绑定；请核对账号记录")
+        print(f"[codex-oauth] add-phone: MySQL 已绑定账号 ID={account_id}，此号码已占用 {claim.get('account_count')}/{max_accounts_per_phone} 个账号名额")
+
+        # ── 6) 完成订单 & 更新复用池 ──
+        try:
+            await run_5sim(
+                lambda call_proxy, call_proxy_insecure: num5sim.finish_order(
+                    api_key=api_key,
+                    order_id=order_id,
+                    proxy=call_proxy,
+                    proxy_insecure=call_proxy_insecure,
+                ),
+                action="5sim 完成订单",
+            )
+            print(f"[codex-oauth] add-phone: 5sim 订单 {order_id} 已标记完成")
+        except Exception as e:
+            print(f"[codex-oauth] add-phone: 5sim finish 失败（不影响绑定）: {type(e).__name__}")
+
+        # 写入复用池（每号最多复用 DEFAULT_MAX_USES=3 次）
+        if reuse_pool is not None:
+            entry = reuse_pool.add_or_update(
+                phone=phone, country=actual_country,
+                operator=order.operator or operator,
+                product=product, order_id=order_id,
+            )
+            print(f"[codex-oauth] add-phone: 复用池订单元数据已更新 ****{phone[-4:]}")
+            reuse_pool.prune_expired()
+            reuse_pool.save()
+
+    async def verify(page) -> None:
+        async with selected_order() as (order, bind):
+            try:
+                await submit_order(page, order, bind)
+            except BaseException:
+                try:
+                    await run_5sim(
+                        lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
+                            api_key=api_key, order_id=order.id, proxy=call_proxy,
+                            proxy_insecure=call_proxy_insecure,
+                        ), action="取消未完成订单",
+                    )
+                except Exception:
+                    print(f"[codex-oauth] add-phone: 订单 {order.id} 取消失败，请核对订单状态")
+                raise
+
+    return verify
 
 
 async def run_codex_oauth(
@@ -541,12 +1168,15 @@ async def run_codex_oauth(
     *,
     account_email: str = "",
     fetch_code=None,
+    phone_verifier: Optional[Callable[[Any], Awaitable[None]]] = None,
     proxy: Optional[str] = None,
+    proxy_insecure: bool = False,
     timeout: float = 180.0,
 ) -> Dict[str, Any]:
     """跑一次 codex OAuth，自动应对 log-in / email-verification / choose-an-account / consent 中间页。
 
     `fetch_code`: async () -> str，给 OAuth 阶段拉新 OTP（OAuth 走的是另一封 OTP 邮件）。
+    `phone_verifier`: async (page) -> None，可选；用于在非 headless 模式下等待用户手动完成手机号验证。
     """
     if fetch_code is None:
         raise ValueError("run_codex_oauth 需要 fetch_code（与 step4 的 OTP 拿码 callable 一样）")
@@ -626,13 +1256,56 @@ async def run_codex_oauth(
                 await _save_debug(page, "codex-oauth-error-page")
                 raise RuntimeError(f"OpenAI OAuth 错误页：{cur}")
 
+            if await _is_add_phone_page(page):
+                await _save_debug(page, "codex-oauth-add-phone")
+                if phone_verifier is None:
+                    raise RuntimeError(f"OpenAI 要求手机号验证，无法仅凭邮箱 OTP 完成 Codex OAuth。当前 URL: {page.url}")
+                print("[codex-oauth] add-phone: 开始手机号验证")
+                await phone_verifier(page)
+                deadline = max(deadline, loop.time() + 120.0)
+                otp_filled = False
+                last_action_at = 0.0
+                continue
+
             now = loop.time()
             if now - last_action_at < action_cooldown:
                 continue
 
+            # OTP 页：拿新 OTP 填进去。新版登录流可能停留在 /log-in 但 DOM 已切到 OTP。
+            if not otp_filled and ("email-verification" in cur or await _has_visible_otp_input(page)):
+                print("[codex-oauth] email-verification 页，拉一个新 OTP...")
+                try:
+                    code = await fetch_code()
+                except Exception as e:
+                    await _save_debug(page, "codex-oauth-otp-fetch-fail")
+                    raise RuntimeError(f"OAuth 阶段拿 OTP 失败：{e}") from e
+                if not code:
+                    raise RuntimeError("OAuth 阶段没拿到 OTP")
+                if await _fill_otp_code(page, code):
+                    otp_filled = True
+                    last_action_at = now
+                    continue
+
+            # choose-an-account / consent：点同意。部分情况下 URL 不变，但账号选择已可见。
+            if "choose-an-account" in cur or "consent" in cur or await _has_visible_account_picker(page):
+                if consent_clicks < 5 and await _try_click_consent(page, account_email):
+                    consent_clicks += 1
+                    last_action_at = now
+                    continue
+
             # /log-in 页：填邮箱回车
             if "auth.openai.com/log-in" in cur:
                 if account_email:
+                    if await _has_auth_soft_error(page):
+                        if await _try_recover_auth_soft_error(page, label="log-in"):
+                            login_attempts = 0
+                            last_login_url = ""
+                            last_action_at = 0.0
+                            continue
+                        last_action_at = now - action_cooldown
+                        print("[codex-oauth] log-in: 超时/错误页暂未恢复，稍后重试")
+                        continue
+
                     if await _has_auth_soft_error(page) and authorize_restarts < 2:
                         authorize_restarts += 1
                         login_attempts = 0
@@ -647,6 +1320,10 @@ async def run_codex_oauth(
                         except Exception as e:
                             print(f"[codex-oauth] log-in: 重开 authorize 失败 {e}")
 
+                    if not await _has_visible_login_email_input(page):
+                        last_action_at = now
+                        continue
+
                     if cur != last_login_url:
                         login_attempts = 0
                         last_login_url = cur
@@ -655,7 +1332,7 @@ async def run_codex_oauth(
                         login_attempts += 1
                         print(f"[codex-oauth] log-in: 第 {login_attempts}/3 次提交邮箱")
                         if await _fill_email_on_login(page, account_email):
-                            progressed = await _wait_for_oauth_progress(page, callback_future, cur, timeout_seconds=5.0)
+                            progressed = await _wait_for_oauth_progress(page, callback_future, cur, timeout_seconds=12.0)
                             if progressed:
                                 last_action_at = 0.0
                             else:
@@ -679,28 +1356,6 @@ async def run_codex_oauth(
 
                 last_action_at = now
                 continue
-
-            # /email-verification：拿新 OTP 填进去
-            if "email-verification" in cur and not otp_filled:
-                print("[codex-oauth] email-verification 页，拉一个新 OTP...")
-                try:
-                    code = await fetch_code()
-                except Exception as e:
-                    await _save_debug(page, "codex-oauth-otp-fetch-fail")
-                    raise RuntimeError(f"OAuth 阶段拿 OTP 失败：{e}") from e
-                if not code:
-                    raise RuntimeError("OAuth 阶段没拿到 OTP")
-                if await _fill_otp_code(page, code):
-                    otp_filled = True
-                    last_action_at = now
-                    continue
-
-            # choose-an-account / consent：点同意
-            if "choose-an-account" in cur or "consent" in cur:
-                if consent_clicks < 5 and await _try_click_consent(page, account_email):
-                    consent_clicks += 1
-                    last_action_at = now
-                    continue
 
             # 兜底：还在 auth 域但状态不明，尝试通用同意按钮
             if ("auth.openai.com" in cur or "auth0.openai.com" in cur) and "log-in" not in cur and consent_clicks < 5:
@@ -735,7 +1390,12 @@ async def run_codex_oauth(
 
     print("[codex-oauth] callback received, exchanging code for tokens...")
     token_resp = await loop.run_in_executor(
-        None, lambda: exchange_code(params["code"], verifier, proxy=proxy)
+        None, lambda: exchange_code(
+            params["code"],
+            verifier,
+            proxy=proxy,
+            proxy_insecure=proxy_insecure,
+        )
     )
 
     creds = build_codex_credentials(token_resp, fallback_email=account_email)

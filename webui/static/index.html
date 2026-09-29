@@ -6,104 +6,179 @@
   <title>ChatGPT Quick Register</title>
   <style>
     :root {
-      --bg: #0f1115;
-      --panel: #161a22;
-      --panel-2: #1d2230;
-      --border: #2a3140;
-      --fg: #e6edf3;
-      --fg-muted: #97a4b3;
-      --accent: #4f8cff;
-      --ok: #2ea043;
-      --warn: #d29922;
-      --err: #f85149;
+      --bg: #f4f6fa;
+      --panel: #ffffff;
+      --panel-2: #f7f9fc;
+      --border: #e3e8f0;
+      --fg: #172033;
+      --fg-muted: #738096;
+      --accent: #356df3;
+      --ok: #16845b;
+      --warn: #a96a08;
+      --err: #c84444;
+      --shadow: 0 1px 2px rgba(24, 39, 75, .04), 0 8px 24px rgba(24, 39, 75, .045);
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
+    html, body { min-height: 100%; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--fg);
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", Arial, sans-serif;
+      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", Arial, sans-serif;
     }
     header {
-      padding: 14px 20px;
+      min-height: 72px;
+      padding: 14px clamp(18px, 3vw, 42px);
       border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between;
-      background: var(--panel);
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      background: rgba(255,255,255,.92);
+      position: sticky; top: 0; z-index: 20;
+      backdrop-filter: blur(14px);
     }
-    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: -.3px; }
     header .stats { color: var(--fg-muted); font-size: 12px; }
     .stats b { color: var(--fg); }
+    .brand { display:flex; align-items:center; gap:11px; min-width:0; }
+    .brand-mark { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; background:#edf3ff; color:var(--accent); font-size:20px; }
+    .brand-caption { color:var(--fg-muted); font-size:11px; margin-top:1px; }
+    .header-meta { display:flex; align-items:center; gap:18px; }
+    .connection { display:inline-flex; align-items:center; gap:7px; color:var(--fg-muted); font-size:12px; white-space:nowrap; }
+    .connection::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px #e8f6ef; }
 
-    main {
-      display: grid;
-      grid-template-columns: 380px 1fr;
-      gap: 12px;
-      padding: 12px;
-      height: calc(100vh - 50px);
-      overflow: hidden;
-    }
-    aside { overflow-y: auto; padding-right: 4px; }
-    .right { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; min-height: 0; }
-
+    .app-shell { max-width: 1600px; margin: 0 auto; padding: 24px clamp(14px, 3vw, 42px) 48px; }
+    .page-intro { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin: 2px 0 20px; }
+    .page-intro h2 { margin:0; font-size:24px; letter-spacing:-.6px; }
+    .page-intro p { margin:5px 0 0; color:var(--fg-muted); font-size:13px; }
+    .nav-tabs { display:flex; gap:5px; padding:5px; margin-bottom:20px; width:max-content; max-width:100%; overflow-x:auto; background:#e9edf4; border-radius:12px; }
+    .nav-tab { display:inline-flex; align-items:center; gap:8px; border:0; border-radius:9px; padding:9px 16px; color:#66738a; background:transparent; font-weight:600; white-space:nowrap; }
+    .nav-tab:hover { border-color:transparent; color:var(--fg); background:rgba(255,255,255,.65); }
+    .nav-tab.active { color:var(--fg); background:#fff; box-shadow:0 1px 3px rgba(24,39,75,.12); }
+    .nav-tab .nav-count { color:var(--fg-muted); font-size:11px; font-weight:500; }
+    .view { display:none; }
+    .view.active { display:block; animation:view-in .18s ease-out; }
+    @keyframes view-in { from { opacity:.65; transform:translateY(3px); } to { opacity:1; transform:none; } }
+    .registration-layout { display:grid; grid-template-columns:minmax(320px, 410px) minmax(0,1fr); gap:18px; align-items:start; }
+    .form-stack, .tool-stack { display:grid; gap:16px; min-width:0; }
+    .right { display:grid; grid-template-rows:minmax(260px, .8fr) minmax(360px, 1.2fr); gap:16px; min-height:750px; }
+    .account-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin: 0 0 14px; }
+    .account-toolbar .toolbar-title h3 { margin:0; font-size:17px; }
+    .account-toolbar .toolbar-title p { margin:3px 0 0; color:var(--fg-muted); font-size:12px; }
+    .account-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }
+    .tools-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      min-width:0;
     }
     .panel h2 {
-      margin: 0 0 10px;
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--fg-muted);
-      display: flex; align-items: center; justify-content: space-between;
+      margin: 0 0 15px;
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: -.1px;
+      color: var(--fg);
+      display: flex; align-items: center; justify-content: space-between; gap:10px;
     }
+    .panel h2 > span { flex-shrink:0; }
 
-    label { display: block; margin-bottom: 8px; font-size: 12px; color: var(--fg-muted); }
-    label > span { display: block; margin-bottom: 4px; }
+    label { display: block; margin-bottom: 11px; font-size: 12px; color: #66738a; }
+    label > span { display: block; margin-bottom: 5px; font-weight:550; }
     input, select, textarea {
       width: 100%;
-      background: var(--panel-2);
+      background: #fff;
       color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 6px 8px;
+      border: 1px solid #d9e0ea;
+      border-radius: 8px;
+      padding: 9px 11px;
       font: inherit;
+      transition:border-color .15s, box-shadow .15s;
     }
-    input:focus, select:focus { outline: none; border-color: var(--accent); }
-    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .checkrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; color: var(--fg); }
-    .checkrow input { width: 14px; height: 14px; }
+    input::placeholder, textarea::placeholder { color:#a3adbc; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow:0 0 0 3px rgba(53,109,243,.12); }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .checkrow { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; font-size: 12px; color: var(--fg); }
+    .checkrow input { width: 15px; height: 15px; accent-color:var(--accent); flex:none; }
+    .checkrow label { margin:0; color:var(--fg); font-weight:400; }
 
     button {
-      background: var(--panel-2);
+      background: #fff;
       color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 6px 12px;
+      border: 1px solid #d9e0ea;
+      border-radius: 8px;
+      padding: 8px 13px;
       cursor: pointer;
       font: inherit;
+      font-weight:550;
+      transition:background .15s, border-color .15s, box-shadow .15s, transform .15s;
     }
-    button:hover { border-color: var(--accent); }
-    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
-    button.primary:hover { filter: brightness(1.1); }
-    button.danger { color: var(--err); border-color: var(--border); }
-    button.danger:hover { border-color: var(--err); }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:hover { border-color: #aebbd0; background:#f8faff; }
+    button:active { transform:translateY(1px); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; box-shadow:0 2px 5px rgba(53,109,243,.16); }
+    button.primary:hover { filter: brightness(1.04); box-shadow:0 4px 10px rgba(53,109,243,.2); }
+    a.primary { background: var(--accent); border: 1px solid var(--accent); color: white; }
+    button.danger { color: var(--err); border-color: #eadbdb; }
+    button.danger:hover { border-color: var(--err); background:#fff8f8; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; transform:none; box-shadow:none; }
     .btnrow { display: flex; gap: 8px; }
 
+    /* Settings page: page-level save bar + responsive two-column groups. */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      align-items: start;
+    }
+    .settings-bar {
+      position: sticky;
+      top: 84px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 4px 14px rgba(24,39,75,.06);
+      backdrop-filter: blur(14px);
+    }
+    .settings-bar .settings-bar-text { min-width: 0; }
+    .settings-bar h3 { margin: 0; font-size: 15px; }
+    .settings-bar p { margin: 2px 0 0; color: var(--fg-muted); font-size: 12px; }
+    .settings-bar-actions { display: flex; align-items: center; gap: 10px; }
+    .settings-status { color: var(--fg-muted); font-size: 12px; }
+    .settings-status.ok { color: var(--ok); font-weight: 600; }
+    .settings-status.err { color: var(--err); font-weight: 600; }
+
+    .proxy-result { margin-top: 12px; padding: 12px; border:1px solid var(--border); border-radius:10px; background:#f7f9fc; font-size:12px; }
+    .proxy-result .proxy-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+    .proxy-result .proxy-ip { font-family: ui-monospace, monospace; font-size:13px; font-weight:600; }
+    .proxy-result dl { display:grid; grid-template-columns:auto 1fr; gap:4px 10px; margin:8px 0 0; }
+    .proxy-result dt { color: var(--fg-muted); }
+    .proxy-result dd { margin:0; overflow-wrap:anywhere; }
+    .proxy-result ul { margin:8px 0 0; padding-left:18px; color: var(--fg-muted); }
+    .proxy-result ul li { margin:2px 0; }
+    .badge.residential { background:#e7f7ee; color:#17663a; border:1px solid #bfe6cf; }
+    .badge.datacenter { background:#fdecec; color:#8f2222; border:1px solid #f2c9c9; }
+    .badge.mobile { background:#eef1fb; color:#33418c; border:1px solid #ccd4f0; }
+    .badge.unknown { background:#f1f3f7; color:#5a6478; border:1px solid #dfe3ea; }
+
     #log {
-      background: #0a0d12;
-      border-radius: 6px;
-      padding: 10px;
+      background: #f7f9fc;
+      border:1px solid var(--border);
+      border-radius: 9px;
+      padding: 13px;
       overflow-y: auto;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px;
-      line-height: 1.45;
+      line-height: 1.55;
       white-space: pre-wrap;
-      color: #b9c2cc;
+      color: #526078;
       flex: 1; min-height: 0;
     }
     #log .ok { color: var(--ok); }
@@ -117,6 +192,7 @@
       overflow: auto;
       flex: 1; min-height: 0;
     }
+    .table table { min-width:1080px; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td {
       text-align: left;
@@ -130,35 +206,39 @@
     td.actions { text-align: right; }
     .badge {
       display: inline-block;
-      padding: 1px 6px;
-      border-radius: 3px;
+      padding: 2px 8px;
+      border-radius: 999px;
       font-size: 11px;
       border: 1px solid var(--border);
+      background:#f8fafc;
     }
-    .badge.ok { color: var(--ok); border-color: var(--ok); }
-    .badge.empty { color: var(--err); border-color: var(--err); }
+    .badge.ok { color: var(--ok); border-color: #c9ebdb; background:#eef9f3; }
+    .badge.empty { color: var(--err); border-color: #f0d4d4; background:#fff3f3; }
     .badge.muted { color: var(--fg-muted); }
-
-    .rflex { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: 8px; }
+    .rflex { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: 10px; }
     .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .small-btn { padding: 3px 8px; font-size: 11px; }
-    .pill { padding: 1px 6px; border-radius: 999px; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); }
-    .pill.running { color: var(--accent); border-color: var(--accent); }
+    .small-btn { padding: 5px 9px; font-size: 11px; }
+    .pill { padding: 3px 9px; border-radius: 999px; font-size: 11px; background: #f4f6fa; border: 1px solid var(--border); }
+    .pill.running { color: var(--accent); border-color: #c9d8ff; background:#edf3ff; }
     .pill.idle { color: var(--fg-muted); }
+
+    /* Shared compact status and table controls are defined with the theme above. */
 
     /* Modal for viewing JSON */
     .modal-bg {
       position: fixed; inset: 0;
-      background: rgba(0,0,0,0.7);
+      background: rgba(22,31,49,.42);
       display: none; align-items: center; justify-content: center;
       z-index: 100;
+      backdrop-filter: blur(3px);
     }
     .modal-bg.open { display: flex; }
     .modal {
       width: min(900px, 92vw); height: min(80vh, 700px);
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 14px;
+      box-shadow:0 24px 80px rgba(24,39,75,.2);
       display: flex; flex-direction: column;
       overflow: hidden;
     }
@@ -186,24 +266,120 @@
 
     .hint { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
     .grow { flex: 1; }
+
+    /* 5sim panel */
+    .fivesim-table { width: 100%; min-width:520px; border-collapse: collapse; font-size: 11px; margin-top: 6px; }
+    .fivesim-table th, .fivesim-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+    .fivesim-table th { color: var(--fg-muted); font-weight: 500; font-size: 10px; background: var(--panel); position: sticky; top: 0; }
+    .fivesim-table tr:hover td { background: var(--panel-2); }
+    .fivesim-table .rate-hi { color: var(--ok); font-weight: 600; }
+    .fivesim-table .rate-md { color: var(--warn); }
+    .fivesim-table .rate-lo { color: var(--err); }
+    .fivesim-order { background: #f3f7ff; border: 1px solid #c9d8ff; border-radius: 9px; padding: 11px; margin-top: 8px; }
+    .fivesim-order .phone { font-family: ui-monospace, monospace; font-size: 16px; font-weight: 600; color: var(--accent); }
+    .fivesim-order .code { font-family: ui-monospace, monospace; font-size: 20px; font-weight: 700; color: var(--ok); letter-spacing: 6px; }
+    .fivesim-scroll { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; }
+    .fivesim-scroll table { width: 100%; min-width:520px; }
+    .pill-5sim { font-size: 10px; padding: 2px 7px; border-radius: 999px; }
+    .pill-5sim.pending { background: #edf3ff; color: var(--accent); border: 1px solid #c9d8ff; }
+    .pill-5sim.received { background: #eef9f3; color: var(--ok); border: 1px solid #c9ebdb; }
+    .pill-5sim.canceled, .pill-5sim.banned { background: #fff3f3; color: var(--err); border: 1px solid #f0d4d4; }
+    .country-tag { display: inline-block; padding: 2px 7px; font-size: 10px; border-radius: 6px; background: #fff; border: 1px solid var(--border); cursor: pointer; margin: 1px; }
+    .country-tag:hover { border-color: var(--accent); }
+    .country-tag.active { background: var(--accent); color: white; border-color: var(--accent); }
+    .fivesim-badge { font-size: 11px; color: var(--fg-muted); }
+    .ac-card { background: #fbfcfe; border: 1px solid var(--border); border-radius: 10px; padding: 13px; margin-top: 10px; }
+    .ac-result-box { margin-top: 8px; border: 1px solid var(--border); border-radius: 9px; max-height: 280px; overflow: auto; }
+    .ac-result-box table { width: 100%; }
+    .ac-status-ok { color: var(--ok); }
+    .ac-status-bad { color: var(--err); }
+    .pay153-log {
+      margin-top: 8px; padding: 10px; min-height: 72px; max-height: 180px; overflow: auto;
+      border: 1px solid var(--border); border-radius: 8px; background: #f7f9fc;
+      color: #526078; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+    }
+    .pay153-result { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .pay153-result textarea { min-height: 62px; resize: vertical; word-break: break-all; }
+
+    @media (max-width: 1100px) {
+      .registration-layout { grid-template-columns:minmax(290px, 360px) minmax(0,1fr); gap:14px; }
+      .tools-grid { grid-template-columns:1fr; }
+      .right { min-height:700px; }
+    }
+    @media (max-width: 820px) {
+      header { min-height:64px; padding:12px 18px; }
+      .app-shell { padding-top:18px; }
+      .registration-layout { grid-template-columns:1fr; }
+      .right { min-height:700px; }
+      .page-intro { align-items:flex-start; flex-direction:column; }
+      .tools-grid { grid-template-columns:1fr; }
+      .settings-grid { grid-template-columns:1fr; }
+      .settings-bar { flex-direction:column; align-items:flex-start; }
+      .panel h2 { align-items:flex-start; flex-wrap:wrap; }
+    }
+    @media (max-width: 520px) {
+      header { padding:10px 12px; }
+      .brand-caption, .connection { display:none; }
+      header .stats { max-width:58vw; text-align:right; overflow-wrap:anywhere; font-size:11px; }
+      .app-shell { padding:14px 10px 30px; }
+      .page-intro h2 { font-size:21px; }
+      .nav-tabs { width:100%; justify-content:stretch; }
+      .nav-tab { flex:1; justify-content:center; padding:9px 10px; }
+      .panel { padding:14px; border-radius:12px; }
+      .row2 { grid-template-columns:1fr; gap:0; }
+      .btnrow { flex-wrap:wrap; }
+      .btnrow .grow { flex-basis:100%; }
+      .account-actions { justify-content:flex-start; }
+      .account-actions button { flex:1 1 auto; }
+      .right { min-height:0; grid-template-rows:minmax(280px,45vh) auto; }
+      #log { min-height:220px; max-height:50vh; }
+      .table { max-height:65vh; }
+      .modal { width:calc(100vw - 16px); height:min(84vh,700px); }
+      .modal-foot { flex-wrap:wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>🦆 ChatGPT Quick Register</h1>
-    <div class="stats" id="stats">读取中…</div>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">🦆</div>
+      <div><h1>Quick Register</h1><div class="brand-caption">账号与注册工作台</div></div>
+    </div>
+    <div class="header-meta">
+      <span class="connection">本地服务已连接</span>
+      <div class="stats" id="stats">读取中…</div>
+    </div>
   </header>
 
-  <main>
-    <!-- LEFT: form -->
-    <aside>
+  <div class="app-shell">
+    <div class="page-intro">
+      <div><h2 id="pageTitle">批量注册</h2><p id="pageDescription">配置任务参数，查看实时进度与运行日志。</p></div>
+    </div>
+    <div id="taskStatusMount" hidden></div>
+    <nav class="nav-tabs" aria-label="主导航" role="tablist">
+      <button type="button" class="nav-tab active" id="nav-register" role="tab" aria-selected="true" aria-controls="view-register" data-view="register">注册</button>
+      <button type="button" class="nav-tab" id="nav-accounts" role="tab" aria-selected="false" aria-controls="view-accounts" data-view="accounts">账号 <span class="nav-count" id="navAccountCount">0</span></button>
+      <button type="button" class="nav-tab" id="nav-tools" role="tab" aria-selected="false" aria-controls="view-tools" data-view="tools">工具</button>
+      <button type="button" class="nav-tab" id="nav-sms" role="tab" aria-selected="false" aria-controls="view-sms" data-view="sms">短信设置</button>
+      <button type="button" class="nav-tab" id="nav-settings" role="tab" aria-selected="false" aria-controls="view-settings" data-view="settings">设置</button>
+    </nav>
+
+    <section class="view active" id="view-register" role="tabpanel" aria-labelledby="nav-register">
+      <div class="registration-layout">
+        <aside class="form-stack">
       <div class="panel">
-        <h2>批量注册 <span class="pill idle" id="status-pill">idle</span></h2>
+        <h2>任务配置 <span class="pill idle" id="status-pill">idle</span></h2>
 
         <div class="row2">
           <label><span>邮箱来源</span>
             <select id="emailSource">
               <option value="duck-api">DDG API（推荐）</option>
+              <option value="mhjc">MHJC 临时邮箱</option>
+              <option value="icloud">iCloud 隐私邮箱</option>
               <option value="duck">DDG 浏览器</option>
               <option value="manual">手动</option>
             </select>
@@ -211,6 +387,7 @@
           <label><span>验证码来源</span>
             <select id="codeSource">
               <option value="qq">QQ IMAP（自动）</option>
+              <option value="mhjc">MHJC IMAP（自动）</option>
               <option value="manual">手动输入</option>
             </select>
           </label>
@@ -233,38 +410,16 @@
         </div>
 
         <details>
-          <summary>邮箱来源 / 凭据</summary>
+          <summary>本次运行</summary>
           <div>
+            <div class="hint" id="proxyRunHint">代理：读取中…</div>
             <label id="emailRow"><span>邮箱（manual 时必填）</span>
               <input id="email" placeholder="name@example.com" />
             </label>
             <label><span>密码（password 模式时用）</span>
               <input id="password" placeholder="留空自动生成" />
             </label>
-            <label><span>DuckDuckGo Token</span>
-              <input id="duckToken" placeholder="auth_token" />
-            </label>
-            <label><span>QQ 邮箱</span>
-              <input id="qqUser" placeholder="xxx@qq.com" />
-            </label>
-            <label><span>QQ IMAP 授权码</span>
-              <input id="qqPass" type="password" placeholder="16 位授权码" />
-            </label>
-            <div class="btnrow">
-              <button type="button" id="saveSecretsBtn">保存凭据到本地配置</button>
-            </div>
-          </div>
-        </details>
-
-        <details>
-          <summary>高级</summary>
-          <div>
-            <label><span>代理</span><input id="proxy" placeholder="http://127.0.0.1:7890" /></label>
-            <div class="row2">
-              <label><span>QQ 轮询次数</span><input id="qqMaxAttempts" type="number" min="1" placeholder="90" /></label>
-              <label><span>QQ 轮询间隔(秒)</span><input id="qqInterval" type="number" min="0.5" step="0.5" placeholder="1.5" /></label>
-            </div>
-            <div class="checkrow"><input type="checkbox" id="headless" /><label for="headless">headless</label></div>
+            <div class="checkrow"><input type="checkbox" id="headless" /><label for="headless">headless（不推荐，常被 Turnstile 拦截）</label></div>
             <div class="checkrow"><input type="checkbox" id="noPersistent" /><label for="noPersistent">不使用持久化 profile</label></div>
             <div class="checkrow"><input type="checkbox" id="noClearTokens" /><label for="noClearTokens">不清 OpenAI cookies（默认会清）</label></div>
             <div class="checkrow"><input type="checkbox" id="stopOnError" /><label for="stopOnError">失败立即停止</label></div>
@@ -278,10 +433,9 @@
         </div>
         <div class="hint" id="argsPreview"></div>
       </div>
-    </aside>
 
-    <!-- RIGHT: log + accounts table -->
-    <section class="right">
+        </aside>
+        <section class="right">
       <div class="panel rflex">
         <h2>实时日志
           <div>
@@ -291,100 +445,451 @@
         </h2>
         <pre id="log"></pre>
       </div>
+        </section>
+      </div>
+    </section>
 
-      <div class="panel rflex">
-        <h2>账号文件 (output/*.json)
-          <div>
+    <section class="view" id="view-settings" role="tabpanel" aria-labelledby="nav-settings">
+      <div class="settings-bar">
+        <div class="settings-bar-text">
+          <h3>设置</h3>
+          <p>邮箱、凭证、高级与代理四组设置统一保存到项目根目录的 <code>.env</code>（已被 Git 忽略），保存后立即生效。</p>
+        </div>
+        <div class="settings-bar-actions">
+          <span class="settings-status" id="settingsStatus"></span>
+          <button type="button" id="saveSettingsBtn" class="primary">保存全部设置到 .env</button>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <div class="panel">
+          <h2>邮箱设置</h2>
+          <div class="hint">邮箱服务商地址与生成策略；具体密钥在「凭证」里填。</div>
+<label><span>QQ 邮箱</span>
+              <input id="qqUser" placeholder="xxx@qq.com" />
+            </label><div class="row2">
+              <label><span>iCloud Host</span>
+                <select id="icloudHost">
+                  <option value="auto">auto</option>
+                  <option value="icloud.com">icloud.com</option>
+                  <option value="icloud.com.cn">icloud.com.cn</option>
+                </select>
+              </label>
+              <label><span>iCloud 获取策略</span>
+                <select id="icloudFetchMode">
+                  <option value="always-new">始终创建新别名</option>
+                  <option value="reuse-existing">优先复用已有别名</option>
+                  <option value="always_new">始终创建新别名（兼容旧配置）</option>
+                  <option value="reuse_existing">优先复用已有别名（兼容旧配置）</option>
+                </select>
+              </label>
+            </div><div class="hint" id="mhjcStatus">MHJC 邮箱有效期与验证码通过 IMAP（mail.mhjc.edu.kg:993）读取</div>
+          <div class="row2">
+            <label><span>MHJC 自定义用户名</span>
+              <input id="mhjcUsername" placeholder="留空随机生成（填了会尽量用，被占用自动加后缀）" />
+            </label>
+            <label><span>MHJC API Base</span>
+              <input id="mhjcApiBase" placeholder="https://api.mhjc.edu.kg/api" />
+            </label>
+          </div>
+          <label><span>DuckDuckGo API Base</span>
+            <input id="duckBaseUrl" placeholder="https://quack.duckduckgo.com" />
+          </label>
+        </div>
+
+        <div class="panel">
+          <h2>凭证</h2>
+          <div class="hint">保存后写入项目根目录的 <code>.env</code>（已被 Git 忽略）。</div>
+<label><span>DuckDuckGo Token</span>
+              <input id="duckToken" placeholder="auth_token" />
+            </label><label><span>QQ IMAP 授权码</span>
+              <input id="qqPass" type="password" placeholder="16 位授权码" />
+            </label>
+          <div class="row2">
+            <label><span>MHJC API Key</span>
+              <input id="mhjcApiKey" type="password" placeholder="留空则用 .env 中已保存的值" />
+            </label>
+          </div>
+<div class="btnrow">
+              <button type="button" id="qqImapTestBtn">测试 QQ IMAP</button>
+            </div>
+          <div class="hint" id="qqImapStatus">启动收码任务前会自动检测</div>
+        </div>
+
+        <div class="panel">
+          <h2>高级设置</h2>
+<div class="row2">
+              <label><span>QQ 轮询次数</span><input id="qqMaxAttempts" type="number" min="1" placeholder="90" /></label>
+              <label><span>QQ 轮询间隔(秒)</span><input id="qqInterval" type="number" min="0.5" step="0.5" placeholder="1.5" /></label>
+            </div><label><span>iCloud 登录等待秒数</span><input id="icloudLoginTimeout" type="number" min="0" placeholder="300" /></label>
+          <div class="row2">
+            <label><span>AC Checker Base URL</span><input id="acBaseUrl" placeholder="http://host:8787" /></label>
+            <label><span>AC Checker Promo ID</span><input id="acPromoId" placeholder="plus-1-month-free" /></label>
+          </div>
+          <label><span>PAY.153 Base URL</span><input id="pay153BaseUrl" placeholder="https://pay.153.ink" /></label>
+        </div>
+
+        <div class="panel">
+          <h2>代理设置</h2>
+<div class="row2">
+              <label><span>代理主机</span><input id="proxyHost" placeholder="proxy.example.com 或 127.0.0.1" /></label>
+              <label><span>代理端口</span><input id="proxyPort" placeholder="8080" /></label>
+            </div>
+            <div class="row2">
+              <label><span>代理账号</span><input id="proxyUser" placeholder="可选" /></label>
+              <label><span>代理密码</span><input id="proxyPass" type="password" placeholder="可选，留空保持不变" /></label>
+            </div>
+            <label><span>代理协议</span>
+              <select id="proxyScheme">
+                <option value="http">http</option>
+                <option value="https">https</option>
+                <option value="socks5">socks5</option>
+              </select>
+            </label>
+            <div class="hint" id="proxyHint">填写主机与端口即可；下面这一项是可选的高级写法。</div>
+            <label><span>代理 URL（高级，可留空）</span><input id="proxy" placeholder="http://user:pass@host:port" /></label>
+            <div class="checkrow"><input type="checkbox" id="proxyEnabled" checked /><label for="proxyEnabled"><b>启用代理</b>（默认开启；关闭后注册/重登将直连）</label></div>
+            <div class="checkrow"><input type="checkbox" id="proxyInsecure" /><label for="proxyInsecure">允许代理自签 HTTPS 证书</label></div>
+            <div class="btnrow" style="margin-top:10px;">
+              <button type="button" id="proxyTestBtn">测试代理（出口 IP / 是否家宽）</button>
+            </div>
+            <div id="proxyTestResult" class="proxy-result" style="display:none;"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-accounts" role="tabpanel" aria-labelledby="nav-accounts">
+      <div class="panel rflex" style="min-height:70vh;">
+        <div class="account-toolbar">
+          <div class="toolbar-title"><h3>账号（MySQL）</h3><p>账号存储于 MySQL；有效性检查只在本地元数据上进行，不访问远端。</p></div>
+          <div class="account-actions">
             <button class="small-btn" id="refreshList">刷新</button>
-            <button class="small-btn primary" id="reloginMarkedBtn" disabled>重登标记账号 (0)</button>
-            <button class="small-btn danger" id="deleteReloginBtn" disabled>删除重登账号</button>
+            <button class="small-btn" id="checkValidityBtn">检查本地有效性</button>
+            <button class="small-btn" id="banScanBtn">检测封禁</button>
             <button class="small-btn danger" id="cleanupBtn">删除空 session</button>
             <button class="small-btn" id="copyTokens">复制 access_token</button>
-            <button class="small-btn primary" id="sub2apiBtn">→ SUB2API</button>
+            <button class="small-btn" id="s2SettingsBtn">SUB2API 设置</button>
+            <button class="small-btn primary" id="codexPushBtn" disabled>Codex 登录并推送 (0)</button>
           </div>
-        </h2>
+        </div>
+        <p class="hint" style="margin:0 0 10px;">勾选账号后点「Codex 登录并推送」：自动重新登录 → 获取新的 Codex 凭据并写入 MySQL → 推送到 SUB2API。登录或 OAuth 失败时不会推送旧凭据。被封禁的账号不会被推送。</p>
+        <p class="hint" id="banScanHint" style="margin:0 0 10px;display:none;"></p>
         <div class="table">
           <table>
-            <thead>
-              <tr>
-                <th>邮箱</th>
-                <th>状态</th>
-                <th>重登</th>
-                <th>过期</th>
-                <th>用户邮箱(session)</th>
-                <th>auth</th>
-                <th>保存时间</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="accountList">
-              <tr><td colspan="8" style="text-align: center; color: var(--fg-muted);">读取中…</td></tr>
-            </tbody>
+            <thead><tr>
+              <th style="width:32px;"><input type="checkbox" id="accountSelectAll" title="全选 / 全不选" /></th>
+              <th>邮箱</th><th>状态</th><th>封禁</th><th>本地有效性</th><th>AC</th><th>refresh</th><th>重登</th><th>过期</th>
+              <th>用户邮箱(session)</th><th>auth</th><th>手机号</th><th>推送</th><th>保存时间</th><th></th>
+            </tr></thead>
+            <tbody id="accountList"><tr><td colspan="15" style="text-align:center;color:var(--fg-muted);">读取中…</td></tr></tbody>
           </table>
         </div>
       </div>
     </section>
-  </main>
 
-  <!-- SUB2API modal -->
-  <div class="modal-bg" id="sub2apiModal">
-    <div class="modal" style="height: auto; max-height: 90vh; overflow: auto;">
-      <div class="modal-head">
-        <span><b>批量转换 / 推送到 SUB2API</b></span>
-        <button onclick="closeSub2api()">关闭 ✕</button>
+    <section class="view" id="view-tools" role="tabpanel" aria-labelledby="nav-tools">
+      <div class="tools-grid">
+      <div class="tool-stack" id="toolPrimary">
+      <div class="panel" id="acPanel">
+        <h2>AC Checker
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span class="fivesim-badge" id="acHealthText">未检测</span>
+            <button class="small-btn" id="acHealthBtn">探活</button>
+            <button class="small-btn" id="acSaveDefaults">保存</button>
+          </span>
+        </h2>
+        <div class="hint">Base URL / Promo ID 在「设置 → 高级设置」里配置。</div>
+
+        <div class="ac-card">
+          <label><span>单项检查：手填 token</span><textarea id="acSingleToken" rows="3" placeholder="eyJ..."></textarea></label>
+          <label><span>或选择账号文件</span><select id="acAccountSelect"><option value="">手填 token</option></select></label>
+          <div class="btnrow">
+            <button id="acSingleCheckBtn" class="primary grow">检查单个账号</button>
+          </div>
+        </div>
+
+        <div class="ac-card">
+          <label><span>批量检查：一行一个 token（可选）</span><textarea id="acBatchTokens" rows="4" placeholder="eyJ...\neyJ..."></textarea></label>
+          <label><span>或选择账号文件（可多选）</span><select id="acBatchAccounts" multiple size="6"></select></label>
+          <div class="checkrow"><input type="checkbox" id="acAllAccounts" checked /><label for="acAllAccounts">同时检查 MySQL 中全部账号</label></div>
+          <div class="btnrow">
+            <button id="acBatchCheckBtn" class="primary grow">批量检查</button>
+          </div>
+        </div>
+
+        <div id="acError" class="hint" style="color:var(--err);display:none;"></div>
+        <div id="acSummary" class="hint"></div>
+        <div class="ac-result-box" id="acResultsBox" style="display:none;">
+          <table>
+            <thead><tr><th>账号</th><th>资格</th><th>原因</th><th>计划</th><th>状态</th><th>来源</th></tr></thead>
+            <tbody id="acResultsBody"></tbody>
+          </table>
+        </div>
       </div>
-      <div class="modal-body" style="font-family: inherit; white-space: normal;">
-        <p style="margin-top:0;color:var(--fg-muted)">读取 <code>output/*.json</code> 里所有有效账号，转成 SUB2API 创建账号 payload。可以**下载 JSON 文件**手动导入，或**直接 POST 到你的 SUB2API**。</p>
 
+      </div>
+      <div class="tool-stack" id="toolSecondary">
+      <div class="panel" id="pay153Panel">
+        <h2>PAY.153 支付链接 <span class="pill idle" id="pay153Status">idle</span></h2>
+        <div class="hint">服务地址在「设置 → 高级设置」里配置。</div>
+        <label><span>搜索账号 <small id="pay153AccountCount">0 / 0</small></span><input id="pay153AccountSearch" type="search" autocomplete="off" placeholder="邮箱或文件名，支持模糊搜索" /></label>
+        <label><span>账号文件</span><select id="pay153Account"><option value="">请选择有 token 的账号</option></select></label>
         <div class="row2">
-          <label><span>分组名 group_name</span><input id="s2gName" value="codex" /></label>
-          <label><span>分组 ID（仅下载 JSON 需要）</span><input id="s2gId" type="number" placeholder="1" value="1" /></label>
+          <label><span>订阅</span><select id="pay153Plan">
+            <option value="plus">Plus</option><option value="pro">Pro</option>
+            <option value="team">Team</option><option value="codex_low">Codex</option>
+          </select></label>
+          <label><span>支付路径</span><select id="pay153LinkType">
+            <option value="hosted">Hosted</option><option value="paypal">PayPal</option>
+            <option value="ideal">iDEAL</option><option value="upi">UPI</option>
+            <option value="pix">PIX</option><option value="momo">MoMo</option>
+            <option value="gcash">GCash</option><option value="kakao">Kakao Pay</option>
+            <option value="ph_short">菲律宾短链</option>
+          </select></label>
         </div>
         <div class="row2">
-          <label><span>concurrency</span><input id="s2concurrency" type="number" value="5" /></label>
-          <label><span>priority</span><input id="s2priority" type="number" value="1" /></label>
+          <label><span>国家 / 地区</span><select id="pay153Country">
+            <option>US</option><option>DE</option><option>FR</option><option>NL</option><option>IN</option>
+            <option>BR</option><option>VN</option><option>GB</option><option>JP</option><option>KR</option>
+            <option>PH</option><option>AU</option><option>CA</option>
+          </select></label>
+          <label><span>币种</span><select id="pay153Currency">
+            <option>USD</option><option>EUR</option><option>INR</option><option>BRL</option><option>VND</option>
+            <option>GBP</option><option>JPY</option><option>KRW</option><option>PHP</option><option>AUD</option><option>CAD</option>
+          </select></label>
         </div>
-        <div class="row2">
-          <label><span>rate_multiplier</span><input id="s2rate" type="number" value="1" /></label>
-          <label><span>privacy_mode</span>
-            <select id="s2privacy">
-              <option value="training_off">training_off（推荐）</option>
-              <option value="training_on">training_on</option>
-            </select>
-          </label>
-        </div>
-        <div class="row2">
-          <label><span>跳过空 session</span>
-            <select id="s2skip"><option value="1">是（推荐）</option><option value="0">否</option></select>
-          </label>
-          <label><span>仅含 codex OAuth 的账号</span>
-            <select id="s2reqCodex">
-              <option value="1">是（推荐：含 refresh_token）</option>
-              <option value="0">否（用 web session 兜底）</option>
-            </select>
-          </label>
-        </div>
-
-        <details open>
-          <summary>推送目标（仅推送时需要）</summary>
+        <label><span>代理池 1（一行一个）</span><textarea id="pay153EntryProxies" rows="3" placeholder="http://user:pass@host:port"></textarea></label>
+        <label id="pay153ExitProxyRow"><span>代理池 2（一行一个）</span><textarea id="pay153ExitProxies" rows="3" placeholder="按支付路径填写推荐地区代理"></textarea></label>
+        <details>
+          <summary>任务参数</summary>
           <div>
-            <label><span>SUB2API base URL</span><input id="s2base" placeholder="http://your-host:port" /></label>
             <div class="row2">
-              <label><span>管理员邮箱</span><input id="s2email" /></label>
-              <label><span>管理员密码</span><input id="s2pass" type="password" /></label>
+              <label><span>失败重试</span><input id="pay153RetryCount" type="number" min="1" max="50" value="10" /></label>
+              <label><span>优惠 Campaign</span><input id="pay153PromoCampaign" placeholder="plus-1-month-free" /></label>
             </div>
-            <label><span>代理（可选）</span><input id="s2proxy" placeholder="http://127.0.0.1:7890" /></label>
-            <div class="checkrow"><input type="checkbox" id="s2dry" /><label for="s2dry">Dry run（只解析、不真正创建）</label></div>
+            <div class="checkrow"><input id="pay153UsePromo" type="checkbox" checked /><label for="pay153UsePromo">Plus 尝试优惠活动</label></div>
+            <div class="checkrow"><input id="pay153UseSentinel" type="checkbox" checked /><label for="pay153UseSentinel">提交 SEN + SO</label></div>
+            <div class="row2">
+              <label><span>空间名称</span><input id="pay153WorkspaceName" value="Codex Workspace" /></label>
+              <label><span>已有空间 ID</span><input id="pay153WorkspaceId" /></label>
+            </div>
+            <div class="row2">
+              <label><span>Team 席位</span><input id="pay153SeatQuantity" type="number" min="2" max="999" value="5" /></label>
+              <label><span>计费周期</span><select id="pay153PriceInterval"><option value="month">月付</option><option value="year">年付</option></select></label>
+            </div>
+            <div class="row2">
+              <label><span>Team 优惠码</span><input id="pay153PromoCode" /></label>
+              <label><span>Codex 积分数量</span><input id="pay153CreditQuantity" type="number" min="1" max="100000" value="13" /></label>
+            </div>
+            <div class="row2">
+              <label><span>固定 CPF / CNPJ</span><input id="pay153PixTaxId" /></label>
+              <label><span>PIX 自动类型</span><select id="pay153PixAutoKind"><option value="cpf">CPF</option><option value="mixed">混合</option><option value="cnpj">CNPJ</option></select></label>
+            </div>
+          </div>
+        </details>
+        <div class="checkrow"><input id="pay153Consent" type="checkbox" /><label for="pay153Consent">我确认此账号属于我，并同意将 access token 发送到第三方 PAY.153</label></div>
+        <div class="btnrow">
+          <button id="pay153CreateBtn" class="primary grow">生成支付链接</button>
+          <button id="pay153CancelBtn" class="danger" disabled>停止</button>
+        </div>
+        <div id="pay153Error" class="hint" style="color:var(--err);display:none;"></div>
+        <pre id="pay153Log" class="pay153-log">等待任务</pre>
+        <div id="pay153Result" class="pay153-result" style="display:none;">
+          <label><span>最终链接 / 付款码</span><textarea id="pay153ResultValue" readonly></textarea></label>
+          <div class="btnrow"><a id="pay153OpenResult" class="primary" target="_blank" rel="noopener noreferrer" style="display:none;padding:6px 12px;border-radius:5px;text-decoration:none;">打开链接</a><button id="pay153CopyResult">复制</button></div>
+        </div>
+      </div>
+
+      </div>
+    </section>
+
+    <!-- 5sim 接码面板，迁移至独立短信设置页 -->
+    <section class="view" id="view-sms" role="tabpanel" aria-labelledby="nav-sms">
+      <div class="tools-grid" style="grid-template-columns:minmax(0,1fr);">
+        <div class="tool-stack" id="smsSettingsStack">
+      <div class="panel" id="fivesimPanel">
+        <h2>📱 5sim 接码平台
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span class="fivesim-badge" id="fsBalance">-</span>
+            <button class="small-btn" id="fsSaveKey">保存</button>
+          </span>
+        </h2>
+        <label><span>API Key <small id="fsApiKeyStatus">未检测</small></span>
+          <input id="fsApiKey" type="password" autocomplete="new-password" placeholder="新密钥；留空保持已保存密钥" />
+        </label>
+        <div class="row2">
+          <label><span>服务名</span>
+            <select id="fsProduct">
+              <option value="openai">openai</option>
+              <option value="chatgpt">chatgpt</option>
+              <option value="amazon">amazon</option>
+              <option value="google">google</option>
+              <option value="telegram">telegram</option>
+              <option value="other">其它（见结果）</option>
+            </select>
+          </label>
+          <label><span>国家过滤</span>
+            <select id="fsCountryFilter"><option value="">全部</option></select>
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>运营商过滤</span>
+            <select id="fsOperatorFilter">
+              <option value="any">any（不限）</option>
+              <option value="virtual21">virtual21</option>
+              <option value="virtual26">virtual26</option>
+              <option value="virtual47">virtual47</option>
+              <option value="virtual51">virtual51</option>
+            </select>
+          </label>
+          <label><span>最高限价</span>
+            <input id="fsMaxPrice" type="number" min="0" step="0.01" placeholder="不限" />
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>候选库存组合上限</span>
+            <input id="fsCandidateLimit" type="number" min="1" max="100" value="8" />
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>获取策略</span>
+            <select id="fsAcquirePriority">
+              <option value="rate">接码率优先（推荐）</option>
+              <option value="price">价格优先</option>
+            </select>
+          </label>
+        </div>
+        <div class="btnrow" style="margin-bottom: 6px;">
+          <button id="fsQueryBtn" class="primary grow">查询价格</button>
+          <button id="fsProfileBtn">查询余额</button>
+        </div>
+        <div class="fivesim-scroll" id="fsPriceScroll" style="display:none;">
+          <table>
+            <thead><tr>
+              <th>国家/运营商</th><th>价格</th><th>库存</th><th>接码率</th><th></th>
+            </tr></thead>
+            <tbody id="fsPriceBody"></tbody>
+          </table>
+        </div>
+        <div id="fsPriceInfo" class="hint" style="display:none;"></div>
+
+        <!-- 活跃订单 -->
+        <div class="fivesim-order" id="fsActiveOrder" style="display:none;">
+          <div class="row-between" style="margin-bottom: 4px;">
+            <span>订单 <b id="fsOrderId">-</b></span>
+            <span id="fsOrderStatus" class="pill-5sim pending">PENDING</span>
+          </div>
+          <div class="row-between" style="margin-bottom: 4px;">
+            <span class="phone" id="fsPhone" style="cursor:pointer;" title="点击复制">-</span>
+            <span class="code" id="fsCode">-</span>
+          </div>
+          <div class="row-between">
+            <span class="fivesim-badge" id="fsOrderMeta">-</span>
+            <div style="display:flex;gap:4px;">
+              <button class="small-btn" id="fsCheckBtn">刷新状态</button>
+              <button class="small-btn danger" id="fsCancelBtn">取消</button>
+              <button class="small-btn primary" id="fsFinishBtn">完成</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 复用池 -->
+        <details id="fsPoolDetails">
+          <summary id="fsPoolSummary">📦 复用池 (0 个号码)</summary>
+          <div style="margin-top: 6px;">
+            <div class="fivesim-scroll" id="fsPoolScroll" style="max-height:160px;">
+              <table class="fivesim-table">
+                <thead><tr><th>号码</th><th>国家/运营商</th><th>历史订单</th><th></th></tr></thead>
+                <tbody id="fsPoolBody"><tr><td colspan="4" style="color:var(--fg-muted);text-align:center;">空</td></tr></tbody>
+              </table>
+            </div>
+            <div class="btnrow" style="margin-top: 4px;">
+              <button class="small-btn" id="fsPoolRefresh">刷新</button>
+              <button class="small-btn danger" id="fsPoolClear">清空</button>
+            </div>
           </div>
         </details>
 
-        <div class="btnrow" style="margin-top: 14px;">
-          <button id="s2preview">预览</button>
-          <button id="s2download" class="primary">下载 JSON</button>
-          <button id="s2push" class="primary">推送到 SUB2API</button>
+        <div id="fsError" class="hint" style="color:var(--err);display:none;"></div>
+      </div>
         </div>
+      </div>
+    </section>
+  </div>
 
-        <pre id="s2result" style="margin-top:14px;background:#0a0d12;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;font-size:11px;max-height:280px;overflow:auto;"></pre>
+
+  <!-- SUB2API 目标设置 -->
+  <div class="modal-bg" id="s2SettingsModal">
+    <div class="modal" style="height:auto;max-height:90vh;overflow:auto;">
+      <div class="modal-head">
+        <span><b>SUB2API 推送目标设置</b></span>
+        <button onclick="closeS2Settings()">关闭 ✕</button>
+      </div>
+      <div class="modal-body" style="font-family:inherit;white-space:normal;">
+        <p style="margin-top:0;color:var(--fg-muted)">
+          这些设置保存在项目 <code>.env</code>（QR_SUB2API_*）。密钥只写入服务端，不会回传到页面。
+        </p>
+        <label><span>SUB2API 服务地址</span><input id="s2BaseUrl" placeholder="http://your-host:port" /></label>
+        <label><span>管理员 API Key（请求头 x-api-key，推荐）</span>
+          <input id="s2AdminApiKey" type="password" placeholder="在 SUB2API 后台生成" />
+        </label>
+        <details>
+          <summary>JWT 兜底（仅在后台未启用管理员 API Key 时需要）</summary>
+          <div>
+            <div class="row2">
+              <label><span>管理员邮箱</span><input id="s2AdminEmail" /></label>
+              <label><span>管理员密码</span><input id="s2AdminPassword" type="password" placeholder="留空表示沿用已保存的密码" /></label>
+            </div>
+            <div class="hint">配置了 API Key 时会优先使用 API Key，忽略这里的邮箱和密码。</div>
+          </div>
+        </details>
+        <div class="row2">
+          <label><span>分组</span><select id="s2GroupName" disabled><option value="">打开设置时自动获取</option></select></label>
+          <label><span>隐私模式</span>
+            <select id="s2PrivacyMode">
+              <option value="training_off">关闭训练（推荐）</option>
+              <option value="training_on">允许训练</option>
+            </select>
+          </label>
+        </div>
+        <div class="row2">
+          <label><span>并发数</span><input id="s2Concurrency" type="number" value="5" /></label>
+          <label><span>优先级</span><input id="s2Priority" type="number" value="1" /></label>
+        </div>
+        <label><span>速率倍率</span><input id="s2RateMultiplier" type="number" value="1" /></label>
+        <div class="checkrow"><input type="checkbox" id="s2DryRun" /><label for="s2DryRun">试运行（只验证鉴权和分组，不创建账号）</label></div>
+        <div class="btnrow" style="margin-top:14px;">
+          <button id="s2SaveBtn" class="primary">保存到 .env</button>
+          <span id="s2SaveState" style="align-self:center;color:var(--fg-muted);font-size:12px;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Codex 登录并推送 -->
+  <div class="modal-bg" id="codexPushModal">
+    <div class="modal" style="height:auto;max-height:90vh;overflow:auto;">
+      <div class="modal-head">
+        <span><b>Codex 自动登录并推送 SUB2API</b></span>
+        <button onclick="closeCodexPush()">关闭 ✕</button>
+      </div>
+      <div class="modal-body" style="font-family:inherit;white-space:normal;">
+        <p style="margin-top:0;color:var(--fg-muted)">
+          将对选定的 <b id="codexPushCount">0</b> 个账号依次执行：重新登录 ChatGPT → 获取新的 Codex OAuth 凭据 → 写入 MySQL → 推送到 SUB2API。
+          OAuth 失败时该账号不会推送，也不会复用旧凭据。
+        </p>
+        <div id="codexPushTargetHint" class="hint"></div>
+        <div class="table" style="max-height:320px;">
+          <table>
+            <thead><tr><th>账号</th><th>登录</th><th>OAuth</th><th>已保存</th><th>推送</th><th>错误</th></tr></thead>
+            <tbody id="codexPushBody"><tr><td colspan="6" style="text-align:center;color:var(--fg-muted);">尚未开始</td></tr></tbody>
+          </table>
+        </div>
+        <div class="btnrow" style="margin-top:14px;">
+          <button id="codexPushStart" class="primary">开始</button>
+          <button id="codexPushStop" class="danger">停止</button>
+          <button id="codexPushSettings">SUB2API 设置</button>
+        </div>
+        <pre id="codexPushSummary" style="margin-top:14px;background:#f7f9fc;padding:12px;border:1px solid var(--border);border-radius:9px;font-family:ui-monospace,monospace;font-size:11px;max-height:200px;overflow:auto;"></pre>
       </div>
     </div>
   </div>
@@ -399,6 +904,8 @@
       <pre class="modal-body" id="modalBody"></pre>
       <div class="modal-foot">
         <button id="copyJson">复制 JSON</button>
+        <button id="copySessionJson">复制 Session JSON</button>
+        <button id="copyRefreshToken">复制 refresh_token</button>
         <button id="copyToken" class="primary">复制 accessToken</button>
       </div>
     </div>
@@ -411,10 +918,9 @@ const statusPill = $("status-pill");
 const stats = $("stats");
 
 let autoScroll = true;
-let reloginMarkedCount = 0;
 let evtSource = null;
-let reloginAutoQueue = false;
-let reloginSubmitting = false;
+// Accounts ticked in the table; the new Codex push workflow only ever touches these.
+const selectedAccounts = new Set();
 
 function fmtLine(line) {
   const safe = line.replace(/[<>&]/g, c => ({'<':'&lt;', '>':'&gt;', '&':'&amp;'}[c]));
@@ -460,73 +966,295 @@ async function pollStatus() {
     } else {
       statusPill.textContent = "idle";
       statusPill.className = "pill idle";
-      if (reloginAutoQueue) setTimeout(continueReloginQueue, 600);
     }
   } catch {}
 }
+
+let codexPushState = {running: false, results: []};
+let codexPushTimer = null;
 
 async function refreshAccounts() {
   const tbody = $("accountList");
   try {
     const rows = await fetch("/api/accounts").then(r => r.json());
+    $("navAccountCount").textContent = rows.length;
+    await acRefreshAccountOptions(rows);
+    await pay153RefreshAccountOptions(rows);
+    // Drop selections whose account no longer exists.
+    const live = new Set(rows.map(r => String(r.id)));
+    [...selectedAccounts].forEach(id => { if (!live.has(id)) selectedAccounts.delete(id); });
+
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--fg-muted);">还没有账号文件</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;color:var(--fg-muted);">MySQL 中还没有账号</td></tr>`;
       stats.innerHTML = `共 <b>0</b> 个账号`;
-      reloginMarkedCount = 0;
-      if ($("reloginMarkedBtn")) { $("reloginMarkedBtn").textContent = "重登标记账号 (0)"; $("reloginMarkedBtn").disabled = true; }
-      if ($("deleteReloginBtn")) $("deleteReloginBtn").disabled = true;
+      syncAccountSelectionUi();
       return;
     }
     const ok = rows.filter(r => r.hasAccessToken).length;
     const empty = rows.length - ok;
     const relogin = rows.filter(r => r.reloginRequired).length;
-    reloginMarkedCount = relogin;
-    if ($("reloginMarkedBtn")) { $("reloginMarkedBtn").textContent = `重登标记账号 (${relogin})`; $("reloginMarkedBtn").disabled = relogin === 0; }
-    if ($("deleteReloginBtn")) { $("deleteReloginBtn").textContent = `删除重登账号 (${relogin})`; $("deleteReloginBtn").disabled = relogin === 0; }
-    stats.innerHTML = `共 <b>${rows.length}</b> 个账号 · <span style="color:var(--ok)">有效 ${ok}</span> · <span style="color:var(--err)">空 ${empty}</span> · <span style="color:var(--warn)">需重登 ${relogin}</span>`;
+    const expired = rows.filter(r => (r.localValidity || {}).status === "expired").length;
+    stats.innerHTML = `共 <b>${rows.length}</b> 个账号 · <span style="color:var(--ok)">有 token ${ok}</span> · <span style="color:var(--err)">空 ${empty}</span> · <span style="color:var(--warn)">本地已过期 ${expired}</span> · <span style="color:var(--warn)">需重登 ${relogin}</span> · <span style="color:var(--err)">封禁 ${rows.filter(r => r.banned).length}</span>`;
+    const pushStatus = new Map(codexPushState.results.map(row => [String(row.id), row]));
     tbody.innerHTML = rows.map(r => {
-      const ok = r.hasAccessToken;
+      const hasToken = r.hasAccessToken;
+      const refresh = r.hasRefreshToken;
       const expires = r.expires ? r.expires.replace("T", " ").slice(0, 19) : "-";
       const user = r.userEmail || '<span class="badge muted">-</span>';
       const saved = (r.savedAt || "").replace("T", " ").slice(0, 19);
       const reloginCell = r.reloginRequired
         ? `<span class="badge empty" title="${r.reloginReason || ''}">需要重登</span>`
         : `<span class="badge muted">-</span>`;
+      const ac = r.acCheck || {};
+      const acBadge = ac.reason
+        ? `<span class="badge ${ac.eligible ? 'ok' : 'empty'}" title="${ac.reason || ''}">${ac.eligible ? '可用' : '不可用'}</span>`
+        : `<span class="badge muted">-</span>`;
+      const validityCell = localValidityBadge(r.localValidity);
+      const checked = selectedAccounts.has(String(r.id)) ? " checked" : "";
       return `<tr>
+        <td><input type="checkbox" class="account-pick" data-account-id="${r.id}"${checked} /></td>
         <td class="email">${r.email}</td>
-        <td><span class="badge ${ok ? 'ok' : 'empty'}">${ok ? '有 token' : '空 session'}</span></td>
+        <td><span class="badge ${hasToken ? 'ok' : 'empty'}">${hasToken ? '有 token' : '空 session'}</span></td>
+        <td>${banBadge(r)}</td>
+        <td>${validityCell}</td>
+        <td>${acBadge}</td>
+        <td><span class="badge ${refresh ? 'ok' : 'empty'}">${refresh ? '有' : '无'}</span></td>
         <td>${reloginCell}</td>
         <td>${expires}</td>
         <td>${user}</td>
         <td><span class="pill">${r.authMode || '-'}</span></td>
+        <td>${r.codexPhoneNumberMasked || '-'}</td>
+        <td>${codexPushBadge(pushStatus.get(String(r.id)))}</td>
         <td>${saved}</td>
         <td class="actions">
-          <button class="small-btn" onclick="viewAccount('${r.filename}')">查看</button>
-          <button class="small-btn danger" onclick="deleteAccount('${r.filename}')">删除</button>
+          <button class="small-btn" onclick="viewAccount(${r.id})">查看</button>
+          <button class="small-btn primary" title="重新登录并刷新该账号的 Cookie/session" onclick="reloginAccount(${r.id})">刷新 Cookie</button>
+          <button class="small-btn danger" onclick="deleteAccount(${r.id})">删除</button>
         </td>
       </tr>`;
     }).join("");
+    bindAccountCheckboxes();
+    syncAccountSelectionUi();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--err)">加载失败：${e}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="15" style="color:var(--err)">加载失败：${e}</td></tr>`;
+    $("navAccountCount").textContent = "!";
   }
 }
 
-async function viewAccount(filename) {
-  const data = await fetch("/api/accounts/" + encodeURIComponent(filename)).then(r => r.json());
-  $("modalTitle").textContent = filename;
+function codexPushBadge(row) {
+  if (!row) return '<span class="badge muted">-</span>';
+  if (row.error) return `<span class="badge empty" title="${row.error}">失败</span>`;
+  if (row.pushed) return '<span class="badge ok" title="已推送到 SUB2API">已推送</span>';
+  if (row.oauth) return '<span class="badge warn">已登录未推送</span>';
+  return '<span class="badge muted">处理中</span>';
+}
+
+function banBadge(row) {
+  if (!row || !row.banned) return '<span class="badge muted">-</span>';
+  const detail = [row.banReason, row.banSubject, row.banSource ? `来源：${row.banSource}` : ""]
+    .filter(Boolean).join(" · ");
+  return `<span class="badge empty" title="${detail}">已封禁</span>`;
+}
+
+// ===== 封禁检测（ban-scan） =====
+let banScanTimer = null;
+
+function renderBanScan(state) {
+  const hint = $("banScanHint");
+  const marked = state.results || [];
+  hint.style.display = "block";
+  if (state.running) {
+    hint.style.color = "var(--warn)";
+    hint.textContent = `封禁检测进行中…已标记 ${marked.length} 个`;
+    return;
+  }
+  if (!marked.length) {
+    hint.style.color = "var(--fg-muted)";
+    hint.textContent = "封禁检测完成：未发现新的封禁账号（已标记的不会被自动清除）";
+    return;
+  }
+  hint.style.color = "var(--err)";
+  hint.textContent = `封禁检测完成：新标记 ${marked.length} 个 —— `
+    + marked.map(row => `${row.email}（${row.reason || "已停用"}）`).join("；");
+}
+
+async function pollBanScan() {
+  try {
+    const state = await fetch("/api/accounts/ban-scan/status").then(r => r.json());
+    renderBanScan(state);
+    if (!state.running && banScanTimer) {
+      clearInterval(banScanTimer);
+      banScanTimer = null;
+      $("banScanBtn").disabled = false;
+      refreshAccounts();
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+async function banScan() {
+  const ids = [...selectedAccounts].map(Number);
+  const scope = ids.length ? `选定的 ${ids.length} 个账号` : "MySQL 中的全部账号";
+  if (!confirm(`将扫描邮箱（QQ 收件箱 + 各 MHJC 收件箱）中的 OpenAI 停用通知，并标记 ${scope}。继续？`)) return;
+  $("banScanBtn").disabled = true;
+  try {
+    const r = await fetch("/api/accounts/ban-scan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({accountIds: ids, sinceDays: 30}),
+    }).then(r => r.json());
+    if (!r.ok) {
+      $("banScanBtn").disabled = false;
+      alert("启动封禁检测失败：" + r.error);
+      return;
+    }
+    appendLog(`[ui] 已启动封禁检测：${r.count} 个账号`);
+    renderBanScan({running: true, results: []});
+    if (!banScanTimer) banScanTimer = setInterval(pollBanScan, 1500);
+    pollBanScan();
+  } catch (e) {
+    $("banScanBtn").disabled = false;
+    alert("请求失败：" + e);
+  }
+}
+
+function bindAccountCheckboxes() {
+  document.querySelectorAll("#accountList .account-pick").forEach(box => {
+    box.onchange = () => {
+      const id = box.dataset.accountId;
+      if (box.checked) selectedAccounts.add(id); else selectedAccounts.delete(id);
+      syncAccountSelectionUi();
+    };
+  });
+}
+
+function syncAccountSelectionUi() {
+  const btn = $("codexPushBtn");
+  const count = selectedAccounts.size;
+  if (btn) {
+    btn.textContent = `Codex 登录并推送 (${count})`;
+    btn.disabled = count === 0 || codexPushState.running;
+  }
+  const all = $("accountSelectAll");
+  if (all) {
+    const boxes = [...document.querySelectorAll("#accountList .account-pick")];
+    all.checked = boxes.length > 0 && boxes.every(box => box.checked);
+    all.indeterminate = !all.checked && boxes.some(box => box.checked);
+  }
+}
+
+const LOCAL_VALIDITY_LABELS = {
+  not_expired: ["ok", "本地未过期"],
+  expired: ["empty", "本地已过期"],
+  missing_token: ["warn", "缺 token"],
+  missing_session: ["warn", "缺 session"],
+  unknown_expiry: ["muted", "过期未知"],
+};
+
+function localValidityBadge(validity) {
+  const v = validity || {};
+  const [cls, label] = LOCAL_VALIDITY_LABELS[v.status] || ["muted", "未检查"];
+  const when = (v.checkedAt || "").replace("T", " ").slice(0, 19);
+  const title = `${v.message || "仅本地检查，不访问远端"}${when ? " · " + when : ""}`;
+  return `<span class="badge ${cls}" title="${title}">${label}</span>`;
+}
+
+async function checkLocalValidity(accountIds) {
+  try {
+    const r = await fetch("/api/accounts/validity-check", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({accountIds: accountIds || []}),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "本地有效性检查失败");
+    appendLog(`[ui] 本地有效性检查完成：${r.count} 个账号（未访问远端）`);
+    await refreshAccounts();
+  } catch (e) {
+    alert("本地有效性检查失败：" + e);
+  }
+}
+
+async function reloginAccount(accountId) {
+  if (!confirm(`将重新登录 MySQL 账号 id=${accountId} 并刷新其 Cookie/session，继续？`)) return;
+  const payload = buildPayload();
+  payload.reloginLimit = 1;
+  payload.reloginTimeout = 180;
+  payload.cooldown = 0;
+  const r = await fetch(`/api/accounts/${accountId}/relogin`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  if (!r.ok) { alert("启动重登失败：" + r.error); return; }
+  appendLog(`[ui] 已提交账号 id=${accountId} 的 Cookie 刷新`);
+  pollStatus();
+}
+
+async function viewAccount(accountId) {
+  const data = await fetch("/api/accounts/" + encodeURIComponent(accountId)).then(r => r.json());
+  $("modalTitle").textContent = data.email ? `${data.email} · id=${data.id}` : `账号 id=${accountId}`;
   const text = JSON.stringify(data, null, 2);
   $("modalBody").textContent = text;
   $("modal").classList.add("open");
   $("copyJson").onclick = () => { navigator.clipboard.writeText(text); flash($("copyJson"), "已复制"); };
+  const sessionJson = JSON.stringify(data.session ?? {}, null, 2);
+  $("copySessionJson").onclick = () => { navigator.clipboard.writeText(sessionJson); flash($("copySessionJson"), "已复制"); };
+  const refreshToken = data.refresh_token || (data.codexAuth || {}).refresh_token || "";
+  $("copyRefreshToken").disabled = !refreshToken;
+  $("copyRefreshToken").onclick = () => { navigator.clipboard.writeText(refreshToken); flash($("copyRefreshToken"), "已复制"); };
   const tok = (data.session || {}).accessToken || "";
   $("copyToken").disabled = !tok;
   $("copyToken").onclick = () => { navigator.clipboard.writeText(tok); flash($("copyToken"), "已复制"); };
 }
 function closeModal() { $("modal").classList.remove("open"); }
 
-async function deleteAccount(filename) {
-  if (!confirm(`确认删除 ${filename}?`)) return;
-  await fetch("/api/accounts/" + encodeURIComponent(filename), { method: "DELETE" });
+const viewMeta = {
+  register: {title: "批量注册", description: "配置任务参数，查看实时进度与运行日志。"},
+  accounts: {title: "账号管理", description: "查看本地账号、凭据状态，并执行批量维护操作。"},
+  tools: {title: "实用工具", description: "AC Checker 与 PAY.153 工具。"},
+  sms: {title: "短信设置", description: "管理 5sim 接码配置、余额、报价、订单与号码池。"},
+  settings: {title: "设置", description: "邮箱、凭证、高级与代理设置；保存后写入项目 .env。"},
+};
+function activateView(name, {focus = false} = {}) {
+  const viewName = viewMeta[name] ? name : "register";
+  document.querySelectorAll(".nav-tab[data-view]").forEach(tab => {
+    const active = tab.dataset.view === viewName;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll(".view[role=tabpanel]").forEach(panel => {
+    const active = panel.id === `view-${viewName}`;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+  $("pageTitle").textContent = viewMeta[viewName].title;
+  $("pageDescription").textContent = viewMeta[viewName].description;
+  document.body.dataset.activeView = viewName;
+  try { history.replaceState(null, "", `#${viewName}`); } catch {}
+  if (focus) $("nav-" + viewName).focus();
+}
+
+document.querySelectorAll(".nav-tab[data-view]").forEach((tab, index, tabs) => {
+  tab.addEventListener("click", () => activateView(tab.dataset.view));
+  tab.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = tabs.length - 1;
+    activateView(tabs[next].dataset.view, {focus:true});
+  });
+});
+activateView(location.hash.slice(1) || "register");
+
+async function deleteAccount(accountId) {
+  if (!confirm(`确认删除 MySQL 账号 id=${accountId}? 该操作不可恢复。`)) return;
+  await fetch("/api/accounts/" + encodeURIComponent(accountId), { method: "DELETE" });
   await refreshAccounts();
 }
 
@@ -536,78 +1264,508 @@ async function cleanupEmpty() {
   await refreshAccounts();
 }
 
-async function deleteReloginAccounts() {
-  await refreshAccounts();
-  if (reloginMarkedCount <= 0) { alert("没有需要重登的账号"); return; }
-  if (!confirm(`确认删除 ${reloginMarkedCount} 个需要重登的账号 JSON？此操作不可撤销。`)) return;
-  const r = await fetch("/api/accounts/delete-relogin-required", { method: "POST" }).then(r => r.json());
-  if (!r.ok) { alert("删除失败"); return; }
-  let msg = `已删除 ${r.count} 个需要重登账号`;
-  if (r.failed && r.failed.length) msg += `，失败 ${r.failed.length} 个`;
-  alert(msg);
-  await refreshAccounts();
+let proxyRoundTrippable = false;
+
+function updateProxyRunHint() {
+  const node = $("proxyRunHint");
+  if (!node) return;
+  const on = $("proxyEnabled") ? $("proxyEnabled").checked : true;
+  if (!on) {
+    node.textContent = "代理：已关闭 —— 本次注册/重登将直连";
+    node.style.color = "var(--warn)";
+    return;
+  }
+  const host = $("proxyHost") ? $("proxyHost").value.trim() : "";
+  const port = $("proxyPort") ? $("proxyPort").value.trim() : "";
+  const advanced = $("proxy") ? $("proxy").value.trim() : "";
+  if (host) {
+    node.textContent = `代理：已启用 → ${$("proxyScheme").value}://${host}${port ? ":" + port : ""}`;
+    node.style.color = "var(--ok)";
+  } else if (advanced) {
+    node.textContent = `代理：已启用 → ${advanced}`;
+    node.style.color = "var(--ok)";
+  } else {
+    node.textContent = "代理：已启用但未配置地址 —— 本次将直连（请在「设置 → 代理设置」填写主机和端口）";
+    node.style.color = "var(--warn)";
+  }
+}
+
+function numOrNull(id) {
+  const el = $(id);
+  if (!el || !el.value.trim()) return null;
+  const value = Number(el.value);
+  return Number.isFinite(value) ? value : null;
 }
 
 async function saveSecrets() {
   const payload = {
     duckToken: $("duckToken").value.trim(),
+    mhjcApiKey: $("mhjcApiKey") ? $("mhjcApiKey").value.trim() : "",
     duckBaseUrl: $("duckBaseUrl") ? $("duckBaseUrl").value.trim() : "",
+    icloudHost: $("icloudHost").value,
+    icloudFetchMode: $("icloudFetchMode").value,
     qqUser: $("qqUser").value.trim(),
     qqPass: $("qqPass").value,
-    proxy: $("proxy").value.trim(),
+    acCheckerBaseUrl: $("acBaseUrl") ? $("acBaseUrl").value.trim() : "",
+    acCheckerPromoId: $("acPromoId") ? $("acPromoId").value.trim() : "",
+    pay153BaseUrl: $("pay153BaseUrl") ? $("pay153BaseUrl").value.trim() : "",
+    mhjcApiBase: $("mhjcApiBase") ? $("mhjcApiBase").value.trim() : "",
+    mhjcUsername: $("mhjcUsername") ? $("mhjcUsername").value.trim() : "",
+    qqMaxAttempts: numOrNull("qqMaxAttempts"),
+    qqInterval: numOrNull("qqInterval"),
+    icloudLoginTimeout: numOrNull("icloudLoginTimeout"),
+    proxyScheme: $("proxyScheme") ? $("proxyScheme").value : "",
+    proxyHost: $("proxyHost") ? $("proxyHost").value.trim() : "",
+    proxyPort: $("proxyPort") ? $("proxyPort").value.trim() : "",
+    proxyUser: $("proxyUser") ? $("proxyUser").value.trim() : "",
+    proxyInsecure: $("proxyInsecure").checked,
+    proxyEnabled: $("proxyEnabled") ? $("proxyEnabled").checked : true,
+    emailSource: $("emailSource") ? $("emailSource").value : "",
+    codeSource: $("codeSource") ? $("codeSource").value : "",
+    authMode: $("authMode") ? $("authMode").value : "",
+    count: numOrNull("count"),
+    cooldown: $("cooldown").value.trim() === "" ? null : Number($("cooldown").value),
+    headless: $("headless").checked,
+    noPersistent: $("noPersistent").checked,
+    noClearTokens: $("noClearTokens").checked,
+    stopOnError: $("stopOnError").checked,
+    runCodexOauth: $("runCodexOauth").checked,
   };
-  const r = await fetch("/api/defaults", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(payload),
-  }).then(r => r.json());
-  if (!r.ok) { alert("保存失败"); return; }
-  alert("已保存到 " + r.configPath);
-}
-
-async function reloginMarkedAccounts() {
-  await refreshAccounts();
-  if (reloginMarkedCount <= 0) { alert("没有需要重登的账号"); return; }
-  const payload = buildPayload();
-  if (payload.codeSource !== "qq") { alert("一键重登需要选择 QQ IMAP 自动收码"); return; }
-  if (!payload.qqUser || !payload.qqPass) { alert("请先填写 QQ 邮箱和 IMAP 授权码"); return; }
-  if (!confirm(`将自动重登 ${reloginMarkedCount} 个标记账号。会按小批量连续执行，卡住的账号会超时跳过，确认继续？`)) return;
-  reloginAutoQueue = true;
-  await continueReloginQueue();
-}
-
-async function continueReloginQueue() {
-  if (!reloginAutoQueue) return;
-  if (reloginSubmitting) return;
-  reloginSubmitting = true;
+  // A blank secret field means "keep the stored one", never "erase it".
+  if ($("proxyPass") && $("proxyPass").value) payload.proxyPassword = $("proxyPass").value;
+  // Shown as "already configured" only, so a blank must never be sent.
+  if (!$("mhjcApiKey").value.trim()) delete payload.mhjcApiKey;
+  // Only send the advanced URL when the user typed one, or when a credential-free
+  // value was round-tripped (so clearing it must still be possible).
+  const advancedProxy = $("proxy").value.trim();
+  if (advancedProxy || proxyRoundTrippable) payload.proxy = advancedProxy;
+  const button = $("saveSettingsBtn");
+  const status = $("settingsStatus");
+  const setStatus = (text, cls) => {
+    if (!status) return;
+    status.textContent = text;
+    status.className = "settings-status" + (cls ? " " + cls : "");
+  };
+  if (button) button.disabled = true;
+  setStatus("保存中…");
   try {
-    const status = await fetch("/api/batch/status").then(r => r.json()).catch(() => ({running: true}));
-    if (status.running) return;
-    await refreshAccounts();
-    if (reloginMarkedCount <= 0) {
-      reloginAutoQueue = false;
-      appendLog("[ui] 重登队列完成，没有剩余标记账号");
-      return;
-    }
-    const payload = buildPayload();
-    payload.reloginLimit = 1;
-    payload.reloginTimeout = 180;
-    payload.cooldown = 0;
-    const r = await fetch("/api/accounts/relogin", {
+    const response = await fetch("/api/defaults", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload),
+    });
+    const r = await response.json().catch(() => ({}));
+    if (!response.ok || !r.ok) throw new Error(r.error || `HTTP ${response.status}`);
+    const when = new Date().toLocaleTimeString();
+    setStatus(`已保存到 ${r.envPath || ".env"} · ${when}`, "ok");
+    appendLog(`[ui] 设置已保存到 ${r.envPath || ".env"}`);
+    updateProxyRunHint();
+    setTimeout(() => { if (status && status.classList.contains("ok")) setStatus(""); }, 6000);
+  } catch (e) {
+    setStatus(`保存失败：${e.message || e}`, "err");
+    if (!status) alert("保存失败：" + e);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+const PROXY_KIND_CLASS = { residential: "ok", datacenter: "err", mobile: "warn", unknown: "muted" };
+
+function proxyTestPayload() {
+  return {
+    proxy: $("proxy").value.trim(),
+    proxyScheme: $("proxyScheme") ? $("proxyScheme").value : "",
+    proxyHost: $("proxyHost") ? $("proxyHost").value.trim() : "",
+    proxyPort: $("proxyPort") ? $("proxyPort").value.trim() : "",
+    proxyUser: $("proxyUser") ? $("proxyUser").value.trim() : "",
+    proxyPass: $("proxyPass") ? $("proxyPass").value : "",
+    proxyInsecure: $("proxyInsecure").checked,
+  };
+}
+
+function renderProxyTest(result) {
+  const box = $("proxyTestResult");
+  if (!box) return;
+  box.style.display = "block";
+  if (!result.ok) {
+    box.innerHTML = `<div class="proxy-head"><span class="badge err">失败</span></div>`
+      + `<div>${result.error || "未知错误"}</div>`;
+    return;
+  }
+  const verdict = result.verdict || {};
+  const info = result.info || {};
+  const kind = verdict.kind || "unknown";
+  const badge = `<span class="badge ${PROXY_KIND_CLASS[kind] || "muted"}">${verdict.label || "未知"}</span>`;
+  const rows = [
+    ["出口 IP", `<span class="proxy-ip">${result.exitIp || "-"}</span>`],
+    ["直连 IP", result.directIp ? `${result.directIp}${result.changedIp === false ? "（与出口相同）" : ""}` : "未比较"],
+    ["归属", [info.country, info.region, info.city].filter(Boolean).join(" / ") || "-"],
+    ["运营商", info.isp || "-"],
+    ["ASN", info.asn || "-"],
+    ["查询来源", info.source || "-"],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+
+  const lines = []
+    .concat((verdict.reasons || []).map(r => `判定依据：${r}`))
+    .concat(result.notes || []);
+
+  box.innerHTML = `<div class="proxy-head">${badge}<span class="hint">置信度 ${verdict.confidence || "-"}</span></div>`
+    + `<dl>${rows}</dl>`
+    + (lines.length ? `<ul>${lines.map(l => `<li>${l}</li>`).join("")}</ul>` : "");
+}
+
+async function testProxy() {
+  const button = $("proxyTestBtn");
+  const box = $("proxyTestResult");
+  if (box) {
+    box.style.display = "block";
+    box.innerHTML = "正在通过代理获取出口 IP 并查询归属…（最多约 30 秒）";
+  }
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/proxy/test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(proxyTestPayload()),
+    });
+    const r = await response.json().catch(() => ({}));
+    if (!response.ok) { renderProxyTest({ok: false, error: r.error || `HTTP ${response.status}`}); return; }
+    renderProxyTest(r);
+  } catch (e) {
+    renderProxyTest({ok: false, error: String(e)});
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function testQQImap() {
+  const button = $("qqImapTestBtn");
+  const status = $("qqImapStatus");
+  const user = $("qqUser").value.trim();
+  const password = $("qqPass").value;
+  if (!user || !password) {
+    status.textContent = "请填写 QQ 邮箱和 16 位 IMAP 授权码";
+    status.style.color = "var(--err)";
+    return false;
+  }
+  button.disabled = true;
+  status.textContent = "正在连接 imap.qq.com…";
+  status.style.color = "var(--fg-muted)";
+  try {
+    const response = await fetch("/api/qq/imap-test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({user, password}),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    status.textContent = data.message || "QQ IMAP 登录成功";
+    status.style.color = "var(--ok)";
+    return true;
+  } catch (error) {
+    status.textContent = String(error.message || error);
+    status.style.color = "var(--err)";
+    return false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ===== SUB2API 目标设置（.env） =====
+let s2GroupRequestId = 0;
+let s2GroupDebounceTimer = null;
+let s2SavedGroupName = "codex";
+
+function s2SettingsPayload() {
+  return {
+    s2BaseUrl: $("s2BaseUrl").value.trim(),
+    s2AdminApiKey: $("s2AdminApiKey").value.trim(),
+    s2AdminEmail: $("s2AdminEmail").value.trim(),
+    s2AdminPassword: $("s2AdminPassword").value,
+    s2GroupName: $("s2GroupName").value.trim(),
+    s2Concurrency: numOrNull("s2Concurrency"),
+    s2Priority: numOrNull("s2Priority"),
+    s2RateMultiplier: numOrNull("s2RateMultiplier"),
+    s2PrivacyMode: $("s2PrivacyMode").value || "training_off",
+  };
+}
+
+function applyS2Defaults(d) {
+  if (!d) return;
+  $("s2BaseUrl").value = d.s2BaseUrl || "";
+  $("s2AdminApiKey").value = "";
+  $("s2AdminApiKey").dataset.configuredKey = d.s2AdminApiKeySet ? "1" : "0";
+  $("s2AdminApiKey").placeholder = d.s2AdminApiKeySet ? "已保存（留空表示沿用）" : "在 SUB2API 后台生成";
+  $("s2AdminEmail").value = d.s2AdminEmail || "";
+  $("s2AdminPassword").value = "";
+  $("s2AdminPassword").placeholder = d.s2AdminPasswordSet ? "已保存（留空表示沿用）" : "尚未保存";
+  s2SavedGroupName = d.s2GroupName || "codex";
+  if (!$("s2GroupName").options.length || $("s2GroupName").options[0].value === "") {
+    $("s2GroupName").innerHTML = '<option value="">正在加载分组…</option>';
+  }
+  $("s2Concurrency").value = d.s2Concurrency || "5";
+  $("s2Priority").value = d.s2Priority || "1";
+  $("s2RateMultiplier").value = d.s2RateMultiplier || "1";
+  $("s2PrivacyMode").value = d.s2PrivacyMode || "training_off";
+  $("codexPushTargetHint").textContent = d.s2BaseUrl
+    ? `推送目标：${d.s2BaseUrl}（分组 ${d.s2GroupName || "codex"}，鉴权 ${d.s2AdminApiKeySet ? "管理员 API Key" : "JWT 兜底"}）`
+    : "尚未配置 SUB2API 目标 —— 请先点「SUB2API 设置」填写并保存。";
+}
+
+async function loadS2Defaults() {
+  try {
+    const d = await fetch("/api/defaults").then(r => r.json());
+    applyS2Defaults(d);
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+function renderS2Groups(groups, preferredName) {
+  const select = $("s2GroupName");
+  const choices = (groups || []).filter(group => group && String(group.name || "").trim())
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN", {numeric: true}));
+  if (!choices.length) {
+    select.innerHTML = '<option value="">此服务没有可选分组</option>';
+    select.disabled = true;
+    return;
+  }
+  select.replaceChildren(...choices.map(group => {
+    const option = document.createElement("option");
+    option.value = String(group.name);
+    option.textContent = String(group.name);
+    return option;
+  }));
+  select.disabled = false;
+  const names = choices.map(group => String(group.name));
+  select.value = names.includes(preferredName) ? preferredName : names[0];
+}
+
+async function fetchS2Groups() {
+  if (!$("s2BaseUrl").value.trim()) {
+    $("s2GroupName").innerHTML = '<option value="">请填写服务地址</option>';
+    $("s2GroupName").disabled = true;
+    $("s2SaveState").textContent = "请填写 SUB2API 服务地址后获取分组";
+    return;
+  }
+  const requestId = ++s2GroupRequestId;
+  const select = $("s2GroupName");
+  const previousSelection = select.value;
+  const state = $("s2SaveState");
+  select.disabled = true;
+  select.innerHTML = '<option value="">正在获取分组…</option>';
+  state.textContent = "正在获取 SUB2API 分组…";
+  const body = {
+    baseUrl: $("s2BaseUrl").value.trim(),
+    adminApiKey: $("s2AdminApiKey").value.trim(),
+    adminEmail: $("s2AdminEmail").value.trim(),
+    adminPassword: $("s2AdminPassword").value,
+  };
+  try {
+    const response = await fetch("/api/sub2api/groups", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (requestId !== s2GroupRequestId || !$("s2SettingsModal").classList.contains("open")) return;
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const oldName = previousSelection || s2SavedGroupName;
+    renderS2Groups(data.groups, oldName);
+    state.textContent = data.groups && data.groups.length ? `已获取 ${data.groups.length} 个分组` : "没有可用分组";
+  } catch (error) {
+    if (requestId !== s2GroupRequestId || !$("s2SettingsModal").classList.contains("open")) return;
+    select.innerHTML = '<option value="">获取分组失败</option>';
+    select.disabled = true;
+    state.textContent = `获取分组失败：${String(error.message || error)}`;
+  }
+}
+
+["s2BaseUrl", "s2AdminApiKey"].forEach(id => {
+  $(id).addEventListener("input", scheduleS2GroupRefresh);
+  $(id).addEventListener("change", scheduleS2GroupRefresh);
+});
+
+function scheduleS2GroupRefresh() {
+  if (!$("s2SettingsModal").classList.contains("open")) return;
+  if (!$("s2BaseUrl").value.trim()) {
+    clearTimeout(s2GroupDebounceTimer);
+    s2GroupRequestId++;
+    $("s2GroupName").innerHTML = '<option value="">请填写服务地址</option>';
+    $("s2GroupName").disabled = true;
+    $("s2SaveState").textContent = "请填写 SUB2API 服务地址后获取分组";
+    return;
+  }
+  clearTimeout(s2GroupDebounceTimer);
+  s2GroupRequestId++;
+  s2GroupDebounceTimer = setTimeout(fetchS2Groups, 450);
+}
+
+function openS2Settings() {
+  $("s2SettingsModal").classList.add("open");
+  $("s2SaveState").textContent = "正在读取 .env 配置…";
+  loadS2Defaults().then(d => {
+    if (d) fetchS2Groups();
+    else $("s2SaveState").textContent = "读取配置失败，请稍后重试";
+  });
+}
+function closeS2Settings() {
+  clearTimeout(s2GroupDebounceTimer);
+  s2GroupRequestId++;
+  $("s2SettingsModal").classList.remove("open");
+}
+
+async function saveS2Settings() {
+  const state = $("s2SaveState");
+  const key = $("s2AdminApiKey").value.trim();
+  const password = $("s2AdminPassword").value;
+  const current = await loadS2Defaults();
+  const haveStoredKey = !!(current && current.s2AdminApiKeySet);
+  const haveStoredPassword = !!(current && current.s2AdminPasswordSet);
+  const fallbackReady = !!($("s2AdminEmail").value.trim() || (current && current.s2AdminEmail))
+    && !!(password || haveStoredPassword);
+  if (!$("s2GroupName").value) {
+    alert("请先获取并选择一个分组");
+    return;
+  }
+  if (!key && !haveStoredKey && !fallbackReady) {
+    alert("请填写管理员 API Key（推荐）；若后台未启用 API Key，请改为填写管理员邮箱和密码");
+    return;
+  }
+  try {
+    const body = s2SettingsPayload();
+    if (!key) delete body.s2AdminApiKey;          // keep the stored secret
+    if (!password) delete body.s2AdminPassword;   // keep the stored secret
+    const r = await fetch("/api/defaults", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
     }).then(r => r.json());
-    if (!r.ok) {
-      reloginAutoQueue = false;
-      alert("启动重登失败：" + r.error);
+    if (!r.ok) throw new Error(r.error || "保存失败");
+    state.textContent = "已保存到 .env";
+    const saved = await loadS2Defaults();
+    if (saved) {
+      s2SavedGroupName = saved.s2GroupName || "codex";
+      await fetchS2Groups();
+    }
+  } catch (e) {
+    state.textContent = "保存失败：" + e;
+  }
+}
+
+// ===== Codex 登录并推送 SUB2API =====
+function openCodexPush() {
+  $("codexPushCount").textContent = selectedAccounts.size;
+  $("codexPushModal").classList.add("open");
+  loadS2Defaults();
+  pollCodexPush();
+}
+function closeCodexPush() { $("codexPushModal").classList.remove("open"); }
+
+function renderCodexPush(state) {
+  const body = $("codexPushBody");
+  const rows = state.results || [];
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--fg-muted);">尚未开始</td></tr>`;
+  } else {
+    const mark = (flag, yes) => flag
+      ? `<span class="badge ok">${yes}</span>`
+      : `<span class="badge muted">否</span>`;
+    body.innerHTML = rows.map(row => `<tr>
+      <td>${row.email || ("id=" + row.id)}</td>
+      <td>${mark(row.login, "已登录")}</td>
+      <td>${row.oauth ? '<span class="badge ok">新凭据</span>' : '<span class="badge muted">未获取</span>'}</td>
+      <td>${mark(row.saved, "已写入")}</td>
+      <td>${row.pushed
+            ? `<span class="badge ok">已推送${row.dryRun ? " (dry)" : ""}</span>`
+            : (row.error ? '<span class="badge empty">未推送</span>' : '<span class="badge muted">-</span>')}</td>
+      <td style="color:var(--err);font-size:11px;">${row.error || ""}</td>
+    </tr>`).join("");
+  }
+  $("codexPushSummary").textContent =
+    `进度：已处理 ${state.done || 0} / 选定 ${selectedAccounts.size} · 成功 ${state.pushed || 0} · 失败 ${state.failed || 0}`;
+}
+
+async function pollCodexPush() {
+  try {
+    const state = await fetch("/api/accounts/codex-push/status").then(r => r.json());
+    codexPushState = {running: !!state.running, results: state.results || []};
+    renderCodexPush(state);
+    syncAccountSelectionUi();
+    $("codexPushStart").disabled = state.running;
+    $("codexPushStop").disabled = !state.running;
+    if (state.running && !codexPushTimer) {
+      codexPushTimer = setInterval(pollCodexPush, 1500);
+    } else if (!state.running && codexPushTimer) {
+      clearInterval(codexPushTimer);
+      codexPushTimer = null;
+      refreshAccounts();
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+async function codexPushStart() {
+  if (!selectedAccounts.size) { alert("请先在账号列表勾选要处理的账号"); return; }
+  if (!confirm(`将对 ${selectedAccounts.size} 个账号执行：重新登录 → 获取新 Codex 凭据 → 写入 MySQL → 推送 SUB2API。确认开始？`)) return;
+
+  const payload = buildPayload();
+  if (payload.codeSource === "qq" && (!payload.qqUser || !payload.qqPass)) {
+    alert("请先填写 QQ 邮箱和 IMAP 授权码");
+    return;
+  }
+  if (payload.codeSource !== "qq" && payload.codeSource !== "mhjc") {
+    alert("自动登录需要选择 QQ IMAP 或 MHJC IMAP 自动收码");
+    return;
+  }
+  const target = s2SettingsPayload();
+  const d = await loadS2Defaults();
+  const haveStoredKey = !!(d && d.s2AdminApiKeySet);
+  const haveStoredPassword = !!(d && d.s2AdminPasswordSet);
+  if (!target.s2BaseUrl) {
+    alert("请先在「SUB2API 设置」填写并保存 base URL");
+    return;
+  }
+  if (!target.s2AdminApiKey && !haveStoredKey) {
+    const fallbackReady = !!(target.s2AdminEmail || (d && d.s2AdminEmail))
+      && !!(target.s2AdminPassword || haveStoredPassword);
+    if (!fallbackReady) {
+      alert("请先在「SUB2API 设置」填写管理员 API Key（或 JWT 兜底的管理员邮箱和密码）");
       return;
     }
-    appendLog(`[ui] 已提交重登小批次：1/${r.markedCount} 个待处理`);
-    pollStatus();
-  } finally {
-    reloginSubmitting = false;
   }
+
+  const body = {
+    ...payload,
+    accountIds: [...selectedAccounts].map(Number),
+    ...target,
+    s2DryRun: $("s2DryRun").checked,
+    // persist only the secrets the operator just typed; stored ones stay untouched
+    saveTarget: (!!target.s2AdminApiKey && !haveStoredKey)
+      || (!!target.s2AdminPassword && !haveStoredPassword),
+  };
+  try {
+    const r = await fetch("/api/accounts/codex-push", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (!r.ok) { alert("启动失败：" + r.error); return; }
+    appendLog(`[ui] 已启动 Codex 登录并推送：${r.count} 个账号`);
+    $("codexPushSummary").textContent = "已启动，等待第一个账号完成…";
+    pollCodexPush();
+  } catch (e) {
+    alert("请求失败：" + e);
+  }
+}
+
+async function codexPushStop() {
+  await fetch("/api/batch/stop", { method: "POST" });
+  appendLog("[ui] 已请求停止 Codex 登录并推送任务");
+  pollCodexPush();
 }
 
 function flash(btn, label) {
@@ -616,12 +1774,339 @@ function flash(btn, label) {
   setTimeout(() => btn.textContent = old, 1200);
 }
 
+function acSelectedAccountIds() {
+  return [...$("acBatchAccounts").selectedOptions]
+    .map(opt => Number(opt.value))
+    .filter(value => Number.isInteger(value) && value > 0);
+}
+
+function acTokenLines() {
+  return $("acBatchTokens").value
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+function acRenderResults(results) {
+  const tbody = $("acResultsBody");
+  if (!results.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--fg-muted);">没有结果</td></tr>`;
+    $("acResultsBox").style.display = "block";
+    return;
+  }
+  tbody.innerHTML = results.map(row => {
+    const name = row.accountEmail || row.email || (row.accountId ? `id=${row.accountId}` : "-");
+    const eligible = row.eligible ? '<span class="ac-status-ok">eligible</span>' : '<span class="ac-status-bad">not eligible</span>';
+    return `<tr>
+      <td>${name}</td>
+      <td>${eligible}</td>
+      <td>${row.reason || '-'}</td>
+      <td>${row.plan_type || '-'}</td>
+      <td>${row.status ?? '-'}</td>
+      <td>${row.tokenSource || '-'}</td>
+    </tr>`;
+  }).join("");
+  $("acResultsBox").style.display = "block";
+}
+
+async function acRefreshAccountOptions(rows) {
+  const single = $("acAccountSelect");
+  const batch = $("acBatchAccounts");
+  const currentSingle = single.value;
+  const currentBatch = new Set([...batch.selectedOptions].map(opt => opt.value));
+  const list = rows || await fetch("/api/accounts").then(r => r.json()).catch(() => []);
+  const options = list.map(r => `<option value="${r.id}">${r.email || ("id=" + r.id)}</option>`).join("");
+  single.innerHTML = '<option value="">手填 token</option>' + options;
+  batch.innerHTML = options;
+  if ([...single.options].some(opt => opt.value === currentSingle)) single.value = currentSingle;
+  [...batch.options].forEach(opt => { if (currentBatch.has(opt.value)) opt.selected = true; });
+}
+
+async function acHealth() {
+  $("acError").style.display = "none";
+  try {
+    const baseUrl = $("acBaseUrl").value.trim();
+    const query = baseUrl ? `?baseUrl=${encodeURIComponent(baseUrl)}` : "";
+    const r = await fetch(`/api/ac/health${query}`).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "探活失败");
+    $("acHealthText").textContent = `OK · ${r.health.service || 'ac-checker'} · ${r.health.promo_id || '-'}`;
+    $("acSummary").textContent = `探活成功：${r.baseUrl}`;
+  } catch (e) {
+    $("acHealthText").textContent = "探活失败";
+    $("acError").textContent = String(e);
+    $("acError").style.display = "block";
+  }
+}
+
+async function acCheckSingle() {
+  $("acError").style.display = "none";
+  $("acSummary").textContent = "";
+  try {
+    const payload = {
+      token: $("acSingleToken").value.trim(),
+      accountId: Number($("acAccountSelect").value || 0),
+      baseUrl: $("acBaseUrl").value.trim(),
+      promoId: $("acPromoId").value.trim(),
+    };
+    const r = await fetch("/api/ac/check", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "单项检查失败");
+    acRenderResults([r.result]);
+    $("acSummary").textContent = `单项检查完成：${r.result.accountEmail || r.result.email || '-'} · ${r.result.reason || '-'}`;
+    refreshAccounts();
+  } catch (e) {
+    $("acError").textContent = String(e);
+    $("acError").style.display = "block";
+  }
+}
+
+async function acCheckBatch() {
+  $("acError").style.display = "none";
+  $("acSummary").textContent = "";
+  try {
+    const payload = {
+      tokens: acTokenLines(),
+      accountIds: acSelectedAccountIds(),
+      allAccounts: $("acAllAccounts").checked,
+      baseUrl: $("acBaseUrl").value.trim(),
+      promoId: $("acPromoId").value.trim(),
+    };
+    const r = await fetch("/api/ac/check-batch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "批量检查失败");
+    acRenderResults(r.results || []);
+    const skipped = (r.skipped || []).length;
+    $("acSummary").textContent = `批量检查完成：${r.count || 0} 条，跳过 ${skipped} 条`;
+    refreshAccounts();
+  } catch (e) {
+    $("acError").textContent = String(e);
+    $("acError").style.display = "block";
+  }
+}
+
+// ===== PAY.153 checkout bridge =====
+let pay153JobId = "";
+let pay153PollTimer = null;
+let pay153AccountRows = [];
+
+function pay153ProxyLines(id) {
+  return $(id).value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+}
+
+function pay153SetStatus(status, text) {
+  const node = $("pay153Status");
+  node.textContent = text || status;
+  node.className = `pill ${status === "running" || status === "queued" ? "running" : "idle"}`;
+}
+
+function pay153AppendLog(message) {
+  const node = $("pay153Log");
+  if (node.textContent === "等待任务") node.textContent = "";
+  node.textContent += `${message}\n`;
+  node.scrollTop = node.scrollHeight;
+}
+
+function pay153FuzzyMatch(row, query) {
+  const haystack = `${row.email || ""} id=${row.id}`.toLowerCase();
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return terms.every(term => {
+    if (haystack.includes(term)) return true;
+    let index = 0;
+    for (const char of haystack) {
+      if (char === term[index]) index += 1;
+      if (index >= term.length) return true;
+    }
+    return false;
+  });
+}
+
+function pay153RenderAccountOptions() {
+  const select = $("pay153Account");
+  if (!select) return;
+  const current = select.value;
+  const query = $("pay153AccountSearch").value;
+  const filtered = pay153AccountRows.filter(row => pay153FuzzyMatch(row, query));
+  select.replaceChildren(new Option("请选择有 token 的账号", ""));
+  const currentRow = pay153AccountRows.find(row => String(row.id) === current);
+  if (currentRow && !filtered.some(row => String(row.id) === current)) {
+    select.add(new Option(`${currentRow.email || ("id=" + currentRow.id)}（已选）`, String(currentRow.id)));
+  }
+  filtered.forEach(row => {
+    select.add(new Option(row.email || ("id=" + row.id), String(row.id)));
+  });
+  if ([...select.options].some(option => option.value === current)) select.value = current;
+  $("pay153AccountCount").textContent = `${filtered.length} / ${pay153AccountRows.length}`;
+}
+
+async function pay153RefreshAccountOptions(rows) {
+  const list = rows || await fetch("/api/accounts").then(r => r.json()).catch(() => []);
+  pay153AccountRows = list.filter(row => row.hasAccessToken);
+  pay153RenderAccountOptions();
+}
+
+function pay153SyncRoute(applyDefault = false) {
+  const type = $("pay153LinkType").value;
+  const defaults = {
+    hosted: ["US", "USD"], paypal: ["US", "USD"], ideal: ["NL", "EUR"],
+    upi: ["IN", "INR"], pix: ["BR", "BRL"], momo: ["VN", "VND"],
+    gcash: ["PH", "PHP"], kakao: ["KR", "KRW"], ph_short: ["PH", "PHP"],
+  };
+  if (applyDefault && defaults[type]) {
+    $("pay153Country").value = defaults[type][0];
+    $("pay153Currency").value = defaults[type][1];
+  }
+  $("pay153ExitProxyRow").style.display = ["hosted", "pix", "momo"].includes(type) ? "none" : "block";
+}
+
+function pay153BuildPayload() {
+  return {
+    accountId: Number($("pay153Account").value || 0),
+    plan: $("pay153Plan").value,
+    linkType: $("pay153LinkType").value,
+    country: $("pay153Country").value,
+    currency: $("pay153Currency").value,
+    entryProxies: pay153ProxyLines("pay153EntryProxies"),
+    exitProxies: pay153ProxyLines("pay153ExitProxies"),
+    retryCount: Number($("pay153RetryCount").value || 10),
+    useSentinel: $("pay153UseSentinel").checked,
+    usePromo: $("pay153UsePromo").checked,
+    promoCampaign: $("pay153PromoCampaign").value.trim(),
+    promoCode: $("pay153PromoCode").value.trim(),
+    workspaceName: $("pay153WorkspaceName").value.trim(),
+    workspaceId: $("pay153WorkspaceId").value.trim(),
+    seatQuantity: Number($("pay153SeatQuantity").value || 5),
+    priceInterval: $("pay153PriceInterval").value,
+    creditQuantity: Number($("pay153CreditQuantity").value || 13),
+    pixTaxId: $("pay153PixTaxId").value.trim(),
+    pixAutoKind: $("pay153PixAutoKind").value,
+    acceptedThirdParty: $("pay153Consent").checked,
+  };
+}
+
+function pay153ShowResult(result) {
+  const provider = String(result.link_type || result.provider || "").toLowerCase();
+  const codexShort = String(result.plan || "").toLowerCase() === "codex_low" && result.checkout_session_id
+    ? (result.short_link || result.verification_url || `https://chatgpt.com/checkout/openai_llc/${result.checkout_session_id}`)
+    : "";
+  const value = codexShort || result.short_link || result.verification_url ||
+    (["ideal", "kakao"].includes(provider)
+      ? (result.provider_redirect_url || result.checkout_url || result.qr_data || "")
+      : (result.qr_data || result.provider_redirect_url || result.checkout_url || ""));
+  $("pay153ResultValue").value = value;
+  $("pay153Result").style.display = "block";
+  const open = $("pay153OpenResult");
+  let openUrl = codexShort || result.short_link || result.verification_url || result.provider_redirect_url || result.checkout_url || "";
+  try {
+    const parsed = new URL(openUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) openUrl = "";
+  } catch { openUrl = ""; }
+  open.href = openUrl || "#";
+  open.style.display = openUrl ? "inline-flex" : "none";
+}
+
+async function pay153Poll() {
+  if (!pay153JobId) return;
+  try {
+    const response = await fetch(`/api/pay153/progress?job_id=${encodeURIComponent(pay153JobId)}`);
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    pay153SetStatus(data.status || "running", data.status || "running");
+    if (Array.isArray(data.logs)) {
+      $("pay153Log").textContent = data.logs.map(row => `${row.time || ""} ${row.message || ""}`.trim()).join("\n") || "等待远端日志";
+    } else if (data.text) {
+      pay153AppendLog(data.text);
+    }
+    if (data.status === "done") {
+      pay153ShowResult(data.result || {});
+      pay153JobId = "";
+      $("pay153CreateBtn").disabled = false;
+      $("pay153CancelBtn").disabled = true;
+      refreshAccounts();
+      return;
+    }
+    if (["error", "cancelled"].includes(data.status)) {
+      if (data.error) pay153AppendLog(`ERROR ${data.error}`);
+      pay153JobId = "";
+      $("pay153CreateBtn").disabled = false;
+      $("pay153CancelBtn").disabled = true;
+      return;
+    }
+    pay153PollTimer = setTimeout(pay153Poll, 1200);
+  } catch (error) {
+    $("pay153Error").textContent = String(error);
+    $("pay153Error").style.display = "block";
+    pay153SetStatus("error", "error");
+    pay153JobId = "";
+    $("pay153CreateBtn").disabled = false;
+    $("pay153CancelBtn").disabled = true;
+  }
+}
+
+async function pay153Create() {
+  const payload = pay153BuildPayload();
+  $("pay153Error").style.display = "none";
+  $("pay153Result").style.display = "none";
+  if (!payload.accountId) { $("pay153Error").textContent = "请选择 MySQL 账号"; $("pay153Error").style.display = "block"; return; }
+  if (!payload.entryProxies.length) { $("pay153Error").textContent = "代理池 1 不能为空"; $("pay153Error").style.display = "block"; return; }
+  if (!payload.acceptedThirdParty) { $("pay153Error").textContent = "请先确认第三方 Token 传输"; $("pay153Error").style.display = "block"; return; }
+  if (!confirm(`将 ${$("pay153Account").selectedOptions[0].textContent} 的 access token 发送到 ${$("pay153BaseUrl").value.trim() || "https://pay.153.ink"}，继续？`)) return;
+
+  $("pay153CreateBtn").disabled = true;
+  $("pay153CancelBtn").disabled = false;
+  $("pay153Log").textContent = "提交任务\n";
+  pay153SetStatus("running", "creating");
+  clearTimeout(pay153PollTimer);
+  try {
+    const baseUrl = $("pay153BaseUrl").value.trim();
+    if (baseUrl) {
+      await fetch("/api/defaults", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pay153BaseUrl: baseUrl}),
+      });
+    }
+    const response = await fetch("/api/pay153/checkout", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    pay153JobId = data.jobId;
+    pay153AppendLog(data.queuePosition > 0 ? `已进入队列，第 ${data.queuePosition} 位` : "任务已创建");
+    pay153Poll();
+  } catch (error) {
+    $("pay153Error").textContent = String(error);
+    $("pay153Error").style.display = "block";
+    pay153SetStatus("error", "error");
+    $("pay153CreateBtn").disabled = false;
+    $("pay153CancelBtn").disabled = true;
+  }
+}
+
+async function pay153Cancel() {
+  if (!pay153JobId) return;
+  const jobId = pay153JobId;
+  clearTimeout(pay153PollTimer);
+  await fetch("/api/pay153/cancel", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({jobId}),
+  });
+  pay153JobId = "";
+  pay153SetStatus("cancelled", "cancelled");
+  pay153AppendLog("任务已停止");
+  $("pay153CreateBtn").disabled = false;
+  $("pay153CancelBtn").disabled = true;
+}
+
 async function copyAllTokens() {
   const rows = await fetch("/api/accounts").then(r => r.json());
   const tokens = [];
   for (const r of rows) {
     if (!r.hasAccessToken) continue;
-    const data = await fetch("/api/accounts/" + encodeURIComponent(r.filename)).then(x => x.json());
+    const data = await fetch("/api/accounts/" + encodeURIComponent(r.id)).then(x => x.json());
     const t = (data.session || {}).accessToken;
     if (t) tokens.push(t);
   }
@@ -637,17 +2122,28 @@ function buildPayload() {
   return {
     emailSource: $("emailSource").value,
     codeSource: $("codeSource").value,
+    mhjcApiKey: $("mhjcApiKey") ? $("mhjcApiKey").value.trim() : "",
+    mhjcUsername: $("mhjcUsername") ? $("mhjcUsername").value.trim() : "",
     authMode: $("authMode").value,
     count: Math.max(1, parseInt($("count").value || "1", 10)),
     cooldown: Math.max(0, parseInt($("cooldown").value || "0", 10)),
     email: $("email").value.trim(),
     password: $("password").value.trim(),
     duckToken: $("duckToken").value.trim(),
+    icloudHost: $("icloudHost").value,
+    icloudFetchMode: $("icloudFetchMode").value,
     qqUser: $("qqUser").value.trim(),
     qqPass: $("qqPass").value,
     qqMaxAttempts: num("qqMaxAttempts"),
     qqInterval: num("qqInterval"),
-    proxy: $("proxy").value.trim(),
+    icloudLoginTimeout: num("icloudLoginTimeout"),
+    proxyScheme: $("proxyScheme") ? $("proxyScheme").value : "",
+    proxyHost: $("proxyHost") ? $("proxyHost").value.trim() : "",
+    proxyPort: $("proxyPort") ? $("proxyPort").value.trim() : "",
+    proxyUser: $("proxyUser") ? $("proxyUser").value.trim() : "",
+    proxyPass: $("proxyPass") ? $("proxyPass").value : "",
+    proxyInsecure: $("proxyInsecure").checked,
+    proxyEnabled: $("proxyEnabled") ? $("proxyEnabled").checked : true,
     headless: $("headless").checked,
     noPersistent: $("noPersistent").checked,
     noClearTokens: $("noClearTokens").checked,
@@ -658,11 +2154,10 @@ function buildPayload() {
 
 $("startBtn").onclick = async () => {
   const payload = buildPayload();
-  // Save to localStorage to remember preferences (skip secret-ish fields)
-  const remembered = {...payload};
-  delete remembered.qqPass; delete remembered.duckToken; delete remembered.password;
-  localStorage.setItem("qr.lastForm", JSON.stringify(remembered));
-
+  if (payload.codeSource === "qq" && !await testQQImap()) {
+    alert("QQ IMAP 登录失败，任务未启动。请重新开启 IMAP 服务或更换授权码后再试。");
+    return;
+  }
   const r = await fetch("/api/batch/start", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -675,127 +2170,9 @@ $("startBtn").onclick = async () => {
 
 $("stopBtn").onclick = async () => {
   if (!confirm("确认停止当前任务？")) return;
-  reloginAutoQueue = false;
   await fetch("/api/batch/stop", { method: "POST" });
   pollStatus();
 };
-
-// ===== SUB2API modal =====
-function openSub2api() {
-  // 自动复用左侧表单的 proxy
-  const left = document.getElementById("proxy");
-  if (left && left.value && !$("s2proxy").value) $("s2proxy").value = left.value;
-  $("sub2apiModal").classList.add("open");
-  $("s2result").textContent = "";
-}
-function closeSub2api() { $("sub2apiModal").classList.remove("open"); }
-$("sub2apiBtn").onclick = openSub2api;
-
-function s2common() {
-  return {
-    groupName: $("s2gName").value.trim() || "codex",
-    groupId: Number($("s2gId").value || "1"),
-    concurrency: Number($("s2concurrency").value || "5"),
-    priority: Number($("s2priority").value || "1"),
-    rateMultiplier: Number($("s2rate").value || "1"),
-    privacyMode: $("s2privacy").value || "training_off",
-    skipEmpty: $("s2skip").value === "1",
-    requireCodex: ($("s2reqCodex") || {value: "1"}).value === "1",
-    autoPauseOnExpired: true,
-  };
-}
-
-function s2write(text) { $("s2result").textContent = text; }
-function s2append(text) { $("s2result").textContent += text + "\n"; $("s2result").scrollTop = $("s2result").scrollHeight; }
-
-$("s2preview").onclick = async () => {
-  s2write("预览中…");
-  try {
-    const r = await fetch("/api/sub2api/preview", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(s2common()),
-    }).then(r => r.json());
-    let out = `命中可导入账号：${r.count}\n`;
-    if (r.skipped?.length) out += `跳过：${r.skipped.length}\n` + r.skipped.map(s => `  · ${s.file}: ${s.reason}`).join("\n") + "\n";
-    out += "\n样例（access_token 截断显示）：\n" + JSON.stringify(r.sample, null, 2);
-    s2write(out);
-  } catch (e) {
-    s2write("预览失败：" + e);
-  }
-};
-
-$("s2download").onclick = async () => {
-  s2write("生成中…");
-  const resp = await fetch("/api/sub2api/export", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(s2common()),
-  });
-  if (!resp.ok) { s2write("导出失败：" + resp.status); return; }
-  const blob = await resp.blob();
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `sub2api-batch.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  s2write("已下载到浏览器默认下载目录。");
-};
-
-$("s2push").onclick = async () => {
-  const base = $("s2base").value.trim();
-  const email = $("s2email").value.trim();
-  const password = $("s2pass").value;
-  if (!base || !email || !password) { alert("请先填 base URL、管理员邮箱、密码"); return; }
-
-  if (!confirm(`将向 ${base} 推送账号，确认？`)) return;
-  s2write("推送中…\n");
-  const payload = {
-    ...s2common(),
-    baseUrl: base,
-    email,
-    password,
-    proxy: $("s2proxy").value.trim(),
-    dryRun: $("s2dry").checked,
-  };
-  // 备份非敏感字段到 localStorage
-  localStorage.setItem("qr.s2last", JSON.stringify({
-    baseUrl: base, email, groupName: payload.groupName,
-    groupId: payload.groupId, concurrency: payload.concurrency,
-    priority: payload.priority, rateMultiplier: payload.rateMultiplier,
-  }));
-
-  try {
-    const r = await fetch("/api/sub2api/push", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(payload),
-    }).then(r => r.json());
-    if (!r.ok) { s2write("失败：" + r.error + "\n\n" + (r.log || []).join("\n")); return; }
-    let out = `推送完成 · pushed=${r.pushed.length}  failed=${r.failed.length}  skipped=${r.skipped.length}\n\n`;
-    if (r.pushed.length) out += "成功：\n" + r.pushed.map(x => `  ✓ ${x.name}  id=${x.id ?? '?'}` + (x.dryRun ? "  (dry-run)" : "")).join("\n") + "\n\n";
-    if (r.failed.length) out += "失败：\n" + r.failed.map(x => `  ✗ ${x.name}  ${x.error}`).join("\n") + "\n\n";
-    if (r.skipped.length) out += "跳过：\n" + r.skipped.map(x => `  · ${x.file}  ${x.reason}`).join("\n") + "\n\n";
-    out += "进度日志：\n" + (r.log || []).join("\n");
-    s2write(out);
-  } catch (e) {
-    s2write("请求异常：" + e);
-  }
-};
-
-// 恢复上次 SUB2API 配置
-try {
-  const last = JSON.parse(localStorage.getItem("qr.s2last") || "null");
-  if (last) {
-    if (last.baseUrl) $("s2base").value = last.baseUrl;
-    if (last.email) $("s2email").value = last.email;
-    if (last.groupName) $("s2gName").value = last.groupName;
-    if (last.groupId) $("s2gId").value = last.groupId;
-    if (last.concurrency) $("s2concurrency").value = last.concurrency;
-    if (last.priority) $("s2priority").value = last.priority;
-    if (last.rateMultiplier) $("s2rate").value = last.rateMultiplier;
-  }
-} catch {}
 
 $("clearLog").onclick = () => { logEl.innerHTML = ""; };
 $("autoScroll").onclick = () => {
@@ -803,34 +2180,123 @@ $("autoScroll").onclick = () => {
   $("autoScroll").style.opacity = autoScroll ? 1 : 0.4;
 };
 $("refreshList").onclick = refreshAccounts;
-$("reloginMarkedBtn").onclick = reloginMarkedAccounts;
-$("deleteReloginBtn").onclick = deleteReloginAccounts;
 $("cleanupBtn").onclick = cleanupEmpty;
+$("checkValidityBtn").onclick = () => checkLocalValidity([]);
 $("copyTokens").onclick = copyAllTokens;
-$("saveSecretsBtn").onclick = saveSecrets;
+$("qqImapTestBtn").onclick = testQQImap;
+$("codexPushBtn").onclick = openCodexPush;
+$("banScanBtn").onclick = banScan;
+$("s2SettingsBtn").onclick = openS2Settings;
+$("codexPushSettings").onclick = openS2Settings;
+$("s2SaveBtn").onclick = saveS2Settings;
+$("codexPushStart").onclick = codexPushStart;
+$("codexPushStop").onclick = codexPushStop;
+$("accountSelectAll").onchange = (event) => {
+  document.querySelectorAll("#accountList .account-pick").forEach(box => {
+    box.checked = event.target.checked;
+    if (box.checked) selectedAccounts.add(box.dataset.accountId);
+    else selectedAccounts.delete(box.dataset.accountId);
+  });
+  syncAccountSelectionUi();
+};
+document.querySelectorAll(".modal-bg").forEach(bg => {
+  bg.addEventListener("click", (event) => {
+    if (event.target === bg) {
+      if (bg.id === "s2SettingsModal") closeS2Settings();
+      else bg.classList.remove("open");
+    }
+  });
+});
+if ($("saveSettingsBtn")) $("saveSettingsBtn").onclick = saveSecrets;
+if ($("proxyTestBtn")) $("proxyTestBtn").onclick = testProxy;
+["proxyEnabled", "proxyHost", "proxyPort", "proxy", "proxyScheme"].forEach(id => {
+  const el = $(id);
+  if (el) { el.addEventListener("input", updateProxyRunHint); el.addEventListener("change", updateProxyRunHint); }
+});
+$("acHealthBtn").onclick = acHealth;
+$("acSaveDefaults").onclick = saveSecrets;
+$("acSingleCheckBtn").onclick = acCheckSingle;
+$("acBatchCheckBtn").onclick = acCheckBatch;
+$("pay153CreateBtn").onclick = pay153Create;
+$("pay153CancelBtn").onclick = pay153Cancel;
+$("pay153AccountSearch").oninput = pay153RenderAccountOptions;
+$("pay153LinkType").onchange = () => pay153SyncRoute(true);
+$("pay153Country").onchange = () => {
+  const currencies = {US:"USD",DE:"EUR",FR:"EUR",NL:"EUR",IN:"INR",BR:"BRL",VN:"VND",GB:"GBP",JP:"JPY",KR:"KRW",PH:"PHP",AU:"AUD",CA:"CAD"};
+  $("pay153Currency").value = currencies[$("pay153Country").value] || "USD";
+};
+$("pay153CopyResult").onclick = () => {
+  navigator.clipboard.writeText($("pay153ResultValue").value || "");
+  flash($("pay153CopyResult"), "已复制");
+};
+pay153SyncRoute(false);
 
 // Pre-fill secrets from server defaults / localStorage prefs
 async function init() {
   try {
     const d = await fetch("/api/defaults").then(r => r.json());
     if (d.duckToken) $("duckToken").value = d.duckToken;
+    if (d.duckBaseUrl && $("duckBaseUrl")) $("duckBaseUrl").value = d.duckBaseUrl;
+    if ($("mhjcStatus")) {
+      $("mhjcStatus").textContent = d.mhjcApiKeyPresent
+        ? `MHJC API Key 已在服务端配置（${d.mhjcApiBase}）；验证码走 IMAP`
+        : "MHJC API Key 未配置：请在 .env 设置 QR_MHJC_API_KEY 或在此填入";
+    }
+    if (d.icloudHost) $("icloudHost").value = d.icloudHost;
+    if (d.icloudFetchMode) $("icloudFetchMode").value = d.icloudFetchMode;
     if (d.qqUser) $("qqUser").value = d.qqUser;
     if (d.qqPass) $("qqPass").value = d.qqPass;
-    if (d.proxy) $("proxy").value = d.proxy;
-  } catch {}
-  try {
-	    const saved = JSON.parse(localStorage.getItem("qr.lastForm") || "null");
-	    if (saved) {
-	      delete saved.noCodexOauth;
-	      if (Number(saved.qqMaxAttempts) === 30) delete saved.qqMaxAttempts;
-	      if (Number(saved.qqInterval) === 5) delete saved.qqInterval;
-	      for (const k in saved) {
-	        const el = $(k);
-	        if (!el) continue;
-        if (el.type === "checkbox") el.checked = !!saved[k];
-        else if (saved[k] != null) el.value = saved[k];
-      }
+    if (d.qqMaxAttempts) $("qqMaxAttempts").value = d.qqMaxAttempts;
+    if (d.qqInterval) $("qqInterval").value = d.qqInterval;
+    if (d.icloudLoginTimeout) $("icloudLoginTimeout").value = d.icloudLoginTimeout;
+    if (d.mhjcApiBase && $("mhjcApiBase")) $("mhjcApiBase").value = d.mhjcApiBase;
+    if (d.mhjcUsername && $("mhjcUsername")) $("mhjcUsername").value = d.mhjcUsername;
+    if ($("fsApiKeyStatus")) {
+      fsApiKeyPresent = !!d.fiveSimApiKeyPresent;
+      $("fsApiKeyStatus").textContent = d.fiveSimApiKeyPresent ? "已配置（留空保持现有密钥）" : "未配置";
     }
+    if (d.fiveSimCountry && d.fiveSimCountry !== "any" && $("fsCountryFilter")) {
+      $("fsCountryFilter").add(new Option(d.fiveSimCountry, d.fiveSimCountry));
+      $("fsCountryFilter").value = d.fiveSimCountry;
+    }
+    if (d.fiveSimOperator && $("fsOperatorFilter")) {
+      if (![...$("fsOperatorFilter").options].some(option => option.value === d.fiveSimOperator)) {
+        $("fsOperatorFilter").add(new Option(d.fiveSimOperator, d.fiveSimOperator));
+      }
+      $("fsOperatorFilter").value = d.fiveSimOperator;
+    }
+    if (d.fiveSimProduct && $("fsProduct")) $("fsProduct").value = d.fiveSimProduct;
+    if (d.fiveSimMaxPrice != null && $("fsMaxPrice")) $("fsMaxPrice").value = d.fiveSimMaxPrice;
+    if (d.fiveSimAcquirePriority && $("fsAcquirePriority")) $("fsAcquirePriority").value = d.fiveSimAcquirePriority;
+    if (d.fiveSimCandidateLimit && $("fsCandidateLimit")) $("fsCandidateLimit").value = d.fiveSimCandidateLimit;
+    if (d.acCheckerBaseUrl) $("acBaseUrl").value = d.acCheckerBaseUrl;
+    if (d.acCheckerPromoId) $("acPromoId").value = d.acCheckerPromoId;
+    if (d.pay153BaseUrl) $("pay153BaseUrl").value = d.pay153BaseUrl;
+    // The register form is a saved setting too (it comes from .env, not localStorage).
+    if (d.emailSource && $("emailSource")) $("emailSource").value = d.emailSource;
+    if (d.codeSource && $("codeSource")) $("codeSource").value = d.codeSource;
+    if (d.authMode && $("authMode")) $("authMode").value = d.authMode;
+    if (d.count) $("count").value = d.count;
+    if (d.cooldown !== "" && d.cooldown != null) $("cooldown").value = d.cooldown;
+    ["headless", "noPersistent", "noClearTokens", "stopOnError", "runCodexOauth"].forEach(key => {
+      if ($(key)) $(key).checked = !!d[key];
+    });
+    if (d.proxyScheme && $("proxyScheme")) $("proxyScheme").value = d.proxyScheme;
+    if (d.proxyHost && $("proxyHost")) $("proxyHost").value = d.proxyHost;
+    if (d.proxyPort && $("proxyPort")) $("proxyPort").value = d.proxyPort;
+    if (d.proxyUser && $("proxyUser")) $("proxyUser").value = d.proxyUser;
+    // `d.proxy` is only populated when it holds no credentials, so echoing it
+    // back can never persist a redaction marker as the proxy password.
+    if (d.proxy && $("proxy") && !$("proxyHost")) $("proxy").value = d.proxy;
+    proxyRoundTrippable = !!(d.proxy || d.proxyHost || d.proxyPort);
+    if ($("proxyHint")) {
+      const shown = d.proxyDisplay ? `当前：${d.proxyDisplay}` : "当前未配置代理";
+      $("proxyHint").textContent = `${shown}${d.proxyPasswordSet ? "（代理密码已保存，密码框留空即保持不变）" : ""}`;
+    }
+    $("proxyInsecure").checked = !!d.proxyInsecure;
+    if ($("proxyEnabled")) $("proxyEnabled").checked = d.proxyEnabled !== false;
+    updateProxyRunHint();
+    applyS2Defaults(d);
   } catch {}
   startStream();
   pollStatus();
@@ -838,6 +2304,392 @@ async function init() {
   setInterval(pollStatus, 2500);
   setInterval(refreshAccounts, 8000);
 }
+  // ===== 5sim 接码平台 =====
+  let fsPrices = [];
+  let fsActiveOrder = null;
+  let fsCheckInterval = null;
+  let fsApiKeyPresent = false;
+
+  // -- DOM refs
+  const fsApiKey = $("fsApiKey");
+  const fsProduct = $("fsProduct");
+  const fsCountryFilter = $("fsCountryFilter");
+  const fsOperatorFilter = $("fsOperatorFilter");
+  const fsMaxPrice = $("fsMaxPrice");
+  const fsAcquirePriority = $("fsAcquirePriority");
+
+  function fsApiKeyValue() { return fsApiKey.value.trim(); }
+  function fsHasApiKey() {
+    if (fsApiKeyValue() || fsApiKeyPresent) return true;
+    $("fsError").textContent = "请先配置 API key";
+    $("fsError").style.display = "block";
+    return false;
+  }
+
+  function fsRateClass(rate) {
+    if (rate >= 90) return "rate-hi";
+    if (rate >= 60) return "rate-md";
+    return "rate-lo";
+  }
+
+  function fsRenderCountries() {
+    const current = fsCountryFilter.value;
+    const set = new Set(fsPrices.map(e => e.country));
+    if (current) set.add(current);
+    const countries = [...set].sort();
+    fsCountryFilter.replaceChildren(new Option("全部国家", ""));
+    countries.forEach(country => fsCountryFilter.add(new Option(country, country)));
+    fsCountryFilter.value = current;
+  }
+
+  function fsApplySort(list) {
+    const prio = fsAcquirePriority.value || "rate";
+    if (prio === "price") {
+      list.sort((a, b) => a.cost - b.cost || b.rate - a.rate);
+    } else {
+      list.sort((a, b) => b.rate - a.rate || a.cost - b.cost);
+    }
+    return list;
+  }
+
+  function fsRenderPrices() {
+    const countryF = fsCountryFilter.value;
+    const operatorF = fsOperatorFilter.value;
+    let list = fsPrices;
+    if (countryF) list = list.filter(e => e.country === countryF);
+    if (operatorF && operatorF !== "any") list = list.filter(e => e.operator === operatorF);
+    list = fsApplySort([...list]);
+
+    const tbody = $("fsPriceBody");
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--fg-muted);">无数据</td></tr>`;
+      $("fsPriceInfo").style.display = "none";
+      $("fsPriceScroll").style.display = "block";
+      return;
+    }
+    // 去重：每个 country+operator 组合只保留最优一条
+    const seen = new Set();
+    list = list.filter(e => {
+      const key = `${e.country}|${e.operator}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    tbody.innerHTML = list.slice(0, 60).map(e => `<tr>
+      <td>${e.country} / <span style="color:var(--accent);">${e.operator}</span></td>
+      <td>$${e.cost.toFixed(2)}</td>
+      <td>${e.count}</td>
+      <td><span class="${fsRateClass(e.rate)}">${e.rateStr}</span></td>
+      <td><button class="small-btn primary" data-country="${e.country}" data-operator="${e.operator}" data-cost="${e.cost}">买号</button></td>
+    </tr>`).join("");
+
+    document.querySelectorAll("#fsPriceBody .small-btn.primary").forEach(btn => {
+      btn.onclick = () => fsBuy(btn.dataset.country, btn.dataset.operator, parseFloat(btn.dataset.cost));
+    });
+
+    $("fsPriceInfo").style.display = "block";
+    $("fsPriceInfo").textContent = `共 ${list.length} 个报价（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先）`;
+    $("fsPriceScroll").style.display = "block";
+  }
+
+  async function fsQueryPrices() {
+    const product = fsProduct.value.trim() || "openai";
+
+    $("fsQueryBtn").disabled = true;
+    $("fsQueryBtn").textContent = "查询中…";
+    $("fsError").style.display = "none";
+    try {
+      const payload = product === "other" ? {} : { product };
+      const r = await fetch("/api/5sim/prices", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsPrices = r.entries;
+      fsRenderCountries();
+      fsRenderPrices();
+      $("fsPriceInfo").textContent = `共 ${r.total} 个报价（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先）· ${r.countries.length} 个国家`;
+    } catch (e) {
+      $("fsError").textContent = "查询失败：" + e;
+      $("fsError").style.display = "block";
+    } finally {
+      $("fsQueryBtn").disabled = false;
+      $("fsQueryBtn").textContent = "查询价格";
+    }
+  }
+
+  async function fsQueryProfile() {
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    try {
+      const r = await fetch("/api/5sim/profile", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ apiKey }),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      const p = r.profile;
+      $("fsBalance").textContent = `余额: ${p.balance || "?"} ${p.currency || ""}`;
+    } catch (e) {
+      $("fsError").textContent = "查询余额失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  async function fsBuy(country, operator, cost) {
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    const product = fsProduct.value.trim() || "openai";
+    const maxPriceVal = parseFloat(fsMaxPrice.value) || null;
+    if (fsActiveOrder && (fsActiveOrder.status === "PENDING" || fsActiveOrder.status === "RECEIVED")) {
+      if (!confirm("当前已有活跃订单，确认购买新号码？（建议先取消或完成当前订单）")) return;
+    }
+    const priceLabel = maxPriceVal ? `最高 $${maxPriceVal.toFixed(2)}` : `$${cost.toFixed(2)}`;
+    if (!confirm(`确认购买 ${country} / ${operator}，${priceLabel}？`)) return;
+    try {
+      const body = { apiKey, country, operator, product };
+      if (maxPriceVal) body.maxPrice = maxPriceVal;
+      const r = await fetch("/api/5sim/buy", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsActiveOrder = r.order;
+      fsRenderActiveOrder();
+      fsStartAutoCheck();
+      // auto-refresh pool after purchase
+      fsRefreshPool();
+    } catch (e) {
+      $("fsError").textContent = "购买失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  function fsRenderActiveOrder() {
+    const o = fsActiveOrder;
+    if (!o) { $("fsActiveOrder").style.display = "none"; return; }
+    $("fsActiveOrder").style.display = "block";
+    $("fsOrderId").textContent = o.id;
+    $("fsPhone").textContent = o.phone;
+    $("fsPhone").title = "点击复制";
+    $("fsPhone").onclick = () => { navigator.clipboard.writeText(o.phone || ""); flash($("fsPhone"), "已复制"); };
+
+    const statusEl = $("fsOrderStatus");
+    statusEl.textContent = o.status;
+    statusEl.className = "pill-5sim " + o.status.toLowerCase();
+
+    if (o.code) {
+      $("fsCode").textContent = o.code;
+      $("fsCode").style.color = "var(--ok)";
+    } else {
+      $("fsCode").textContent = "等待中…";
+      $("fsCode").style.color = "var(--warn)";
+    }
+    $("fsOrderMeta").textContent = `${o.country || ""} / ${o.operator || ""} · $${o.price || "?"} · ${o.expires || ""}`;
+  }
+
+  async function fsCheckOrder() {
+    if (!fsActiveOrder) return;
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    try {
+      const r = await fetch(`/api/5sim/check/${fsActiveOrder.id}`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ apiKey }),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsActiveOrder = r.order;
+      fsRenderActiveOrder();
+      if (r.order.status === "RECEIVED" || r.order.status === "CANCELED" || r.order.status === "BANNED" || r.order.status === "FINISHED") {
+        fsStopAutoCheck();
+        fsRefreshPool();  // refresh pool when order finishes
+      }
+    } catch (e) {
+      $("fsError").textContent = "检查订单失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  function fsStartAutoCheck() {
+    fsStopAutoCheck();
+    fsCheckInterval = setInterval(fsCheckOrder, 5000);
+  }
+
+  function fsStopAutoCheck() {
+    if (fsCheckInterval) { clearInterval(fsCheckInterval); fsCheckInterval = null; }
+  }
+
+  async function fsCancelOrder() {
+    if (!fsActiveOrder) return;
+    if (!confirm(`确认取消订单 ${fsActiveOrder.id}？`)) return;
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    try {
+      const r = await fetch(`/api/5sim/cancel/${fsActiveOrder.id}`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ apiKey }),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsActiveOrder.status = "CANCELED";
+      fsRenderActiveOrder();
+      fsStopAutoCheck();
+    } catch (e) {
+      $("fsError").textContent = "取消失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  async function fsFinishOrder() {
+    if (!fsActiveOrder) return;
+    if (!confirm(`确认完成订单 ${fsActiveOrder.id}？收到短信后使用此操作。`)) return;
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    try {
+      const r = await fetch(`/api/5sim/finish/${fsActiveOrder.id}`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ apiKey }),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsActiveOrder.status = "FINISHED";
+      fsRenderActiveOrder();
+      fsStopAutoCheck();
+      fsRefreshPool();
+    } catch (e) {
+      $("fsError").textContent = "完成失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  // ── 复用池管理 ──
+  async function fsRefreshPool() {
+    try {
+      const r = await fetch("/api/5sim/pool").then(r => r.json());
+      if (!r.ok) return;
+      const pool = r.pool || [];
+      $("fsPoolSummary").textContent = `📦 复用池 (${pool.length} 个号码)`;
+      if (!pool.length) {
+        $("fsPoolBody").innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--fg-muted);">空</td></tr>`;
+        return;
+      }
+      $("fsPoolBody").innerHTML = pool.map(e => {
+        return `<tr>
+          <td style="font-family:ui-monospace,monospace;font-size:12px;">${e.phone}</td>
+          <td style="font-size:11px;">${e.country || "?"} / ${e.operator || "?"}</td>
+          <td>${Number(e.successful_uses) || 0}</td>
+          <td>
+            <button class="small-btn primary" data-phone="${e.phone}" title="复用此号码">复用</button>
+            <button class="small-btn danger" data-phone="${e.phone}" title="移除此号码">✕</button>
+          </td>
+        </tr>`;
+      }).join("");
+
+      // bind reuse buttons
+      document.querySelectorAll("#fsPoolBody .small-btn.primary").forEach(btn => {
+        btn.onclick = () => fsReuseFromPool(btn.dataset.phone);
+      });
+      document.querySelectorAll("#fsPoolBody .small-btn.danger").forEach(btn => {
+        btn.onclick = () => fsPoolRemove(btn.dataset.phone);
+      });
+    } catch {}
+  }
+
+  async function fsReuseFromPool(phone) {
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    if (!confirm(`确认复用号码 ${phone}？`)) return;
+    $("fsError").style.display = "none";
+    try {
+      const r = await fetch("/api/5sim/reuse", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ apiKey, phone, country: "any", operator: "any", product: fsProduct.value.trim() || "openai" }),
+      }).then(r => r.json());
+      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
+      fsActiveOrder = r.order;
+      fsRenderActiveOrder();
+      fsStartAutoCheck();
+      fsRefreshPool();
+    } catch (e) {
+      $("fsError").textContent = "复用失败：" + e;
+      $("fsError").style.display = "block";
+    }
+  }
+
+  async function fsPoolRemove(phone) {
+    if (!confirm(`确认从复用池移除 ${phone}？`)) return;
+    try {
+      await fetch("/api/5sim/pool/remove", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ phone }),
+      });
+      fsRefreshPool();
+    } catch {}
+  }
+
+  async function fsPoolClear() {
+    if (!confirm("确认清空整个复用池？此操作不可撤销。")) return;
+    try {
+      await fetch("/api/5sim/pool/clear", { method: "POST" });
+      fsRefreshPool();
+    } catch {}
+  }
+
+  async function fsSaveApiKey() {
+    const apiKey = fsApiKeyValue();
+    if (!apiKey && !confirm("密钥输入为空，将只保存其他设置并保留已保存密钥。继续？")) return;
+    const num = value => value.trim() === "" ? null : Number(value);
+    const payload = {
+      fiveSimCountry: fsCountryFilter.value || "any",
+      fiveSimOperator: fsOperatorFilter.value || "any",
+      fiveSimProduct: fsProduct.value || "openai",
+      fiveSimMaxPrice: fsMaxPrice.value.trim(),
+      fiveSimAcquirePriority: fsAcquirePriority.value || "rate",
+      fiveSimCandidateLimit: num($("fsCandidateLimit").value) || 8,
+    };
+    if (apiKey) payload.fiveSimApiKey = apiKey;
+    try {
+      const response = await fetch("/api/defaults", {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      fsApiKey.value = "";
+      fsApiKeyPresent = !!result.fiveSimApiKeyPresent;
+      $("fsApiKeyStatus").textContent = result.fiveSimApiKeyPresent ? "已配置（密钥不回显）" : "未配置";
+      alert("5sim 设置已保存到本地配置");
+    } catch (e) {
+      alert("保存失败：" + e);
+    }
+  }
+
+  // Event bindings
+  $("fsQueryBtn").onclick = fsQueryPrices;
+  $("fsProfileBtn").onclick = fsQueryProfile;
+  $("fsCheckBtn").onclick = fsCheckOrder;
+  $("fsCancelBtn").onclick = fsCancelOrder;
+  $("fsFinishBtn").onclick = fsFinishOrder;
+  $("fsSaveKey").onclick = fsSaveApiKey;
+  $("fsPoolRefresh").onclick = fsRefreshPool;
+  $("fsPoolClear").onclick = fsPoolClear;
+  fsCountryFilter.onchange = () => { fsRenderPrices(); fsRenderCountries(); };
+  fsOperatorFilter.onchange = () => { fsRenderPrices(); };
+  fsAcquirePriority.onchange = () => { fsRenderPrices(); };
+
+  // The API key is intentionally never returned; startup preserves only status.
+  const _fsInit = init;
+  init = async function() {
+    await _fsInit();
+    await acRefreshAccountOptions();
+    // Auto-query profile & pool if API key present
+    if (fsApiKeyPresent) { fsQueryProfile(); fsRefreshPool(); }
+  };
 init();
 </script>
 </body>

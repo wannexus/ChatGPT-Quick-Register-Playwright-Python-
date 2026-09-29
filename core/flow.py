@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
+
+from core.ban_check import BAN_PATTERNS as BAN_TEXT_PATTERNS
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
@@ -36,8 +40,11 @@ OPENAI_STORAGE_ORIGINS = (
     "https://chat.openai.com",
     "https://auth.openai.com",
 )
-
 DEBUG_DIR = Path(__file__).resolve().parent.parent / "output" / "debug"
+
+
+class HeadlessBlockedError(RuntimeError):
+    """Raised when a browser challenge prevents headless registration."""
 
 
 async def save_debug_artifacts(page: Page, label: str) -> None:
@@ -65,6 +72,7 @@ LOGIN_BUTTON_TEXTS = [
     "log in", "login", "sign in", "登录", "登入",
 ]
 SIGNUP_BUTTON_CSS_SELECTORS = [
+    '[data-testid="signup-button"]',
     '[data-testid*="signup" i]',
     '[data-testid*="sign-up" i]',
     'a[href*="screen_hint=signup"]',
@@ -102,6 +110,22 @@ HARD_BLOCK_PATTERNS = [
     re.compile(r"max[_-]?check[_-]?attempts", re.IGNORECASE),
     re.compile(r"user[_-]?already[_-]?exists", re.IGNORECASE),
 ]
+# Ban text rules come from core.ban_check so login and mailbox classification stay aligned.
+CLOUDFLARE_CHALLENGE_MARKERS = (
+    "challenges.cloudflare.com/turnstile",
+    "__cf_chl_tk",
+    "__cf_chl_rt_tk",
+    "__cf_chl_f_tk",
+    "cf-turnstile-response",
+    "__cf_chl_",
+    "challenge-error-text",
+)
+CLOUDFLARE_TEXT_PATTERNS = (
+    re.compile(r"just a moment", re.IGNORECASE),
+    re.compile(r"enable javascript and cookies to continue", re.IGNORECASE),
+    re.compile(r"verification successful\.?\s*waiting", re.IGNORECASE),
+    re.compile(r"turnstile", re.IGNORECASE),
+)
 COMPLETE_TEXTS = [
     "agree", "同意", "完成", "continue", "继续", "create account", "完成帐户创建", "创建账号",
 ]
@@ -321,6 +345,187 @@ async def _detect_soft_error(page: Page) -> bool:
     return any(pat.search(body) for pat in SOFT_ERROR_PATTERNS)
 
 
+async def _detect_cloudflare_challenge(page: Page) -> bool:
+    try:
+        url = page.url.lower()
+        if "__cf_chl" in url or "/cdn-cgi/challenge-platform/" in url:
+            return True
+    except Exception:
+        pass
+    try:
+        title = (await page.title()).strip().lower()
+        if title in {"just a moment...", "just a moment", "attention required! | cloudflare"}:
+            return True
+    except Exception:
+        pass
+    try:
+        html = (await page.content()).lower()
+    except Exception:
+        html = ""
+    if any(marker.lower() in html for marker in CLOUDFLARE_CHALLENGE_MARKERS):
+        return True
+    try:
+        body = await _page_text(page)
+    except Exception:
+        body = ""
+    return any(pattern.search(body) for pattern in CLOUDFLARE_TEXT_PATTERNS)
+
+
+def _looks_like_chatgpt_home(url: str) -> bool:
+    u = (url or "").lower()
+    return (
+        u == "https://chatgpt.com/"
+        or u.startswith("https://chatgpt.com/?")
+        or u.startswith("https://chatgpt.com/zh-cn")
+        or u.startswith("https://chatgpt.com/zh-cn/")
+    )
+
+
+async def _raise_if_cloudflare_challenge(page: Page, *, label: str) -> None:
+    if not await _detect_cloudflare_challenge(page):
+        return
+    await save_debug_artifacts(page, label)
+    raise HeadlessBlockedError(
+        "OpenAI 注册页被 Cloudflare/Turnstile 拦截，页面没有邮箱输入框。"
+        "duck-api 已可在无头模式生成邮箱，但无头浏览器当前无法继续注册。"
+        "即使用有头模式跑通过一次，如果 Cloudflare 没下发可复用的 cf_clearance，"
+        "headless 仍会被重新挑战；请取消 headless，用有头模式完成验证/注册。"
+    )
+
+
+class AccountBannedError(RuntimeError):
+    """Raised when OpenAI's login page says the account was deactivated."""
+
+
+LOGIN_PASSWORD_SELECTOR = "input[type=password]"
+LOGIN_CODE_SELECTOR = (
+    "input[name*=code i], input[placeholder*=code i], "
+    "input[inputmode=numeric], input[autocomplete=one-time-code]"
+)
+
+
+def classify_login_signal(
+    *,
+    url: str,
+    has_password_form: bool = False,
+    has_code_form: bool = False,
+    body_text: str = "",
+    has_email_form: bool = False,
+) -> str:
+    """Describe what the live login page is actually showing.
+
+    Why this exists: after the email is submitted, the current ChatGPT auth flow
+    renders the password / OTP step **on the same**
+    ``auth.openai.com/api/accounts/authorize?...`` URL, which matches none of the
+    URL patterns the old code polled — so a perfectly healthy re-login timed out.
+    Deciding from the DOM (with the URL as a fallback) fixes that.
+
+    Precedence: explicit notice/failure text first, then real forms, then URL.
+    """
+    text = body_text or ""
+    if any(pattern.search(text) for pattern in BAN_TEXT_PATTERNS):
+        return "banned"
+    if any(pattern.search(text) for pattern in CLOUDFLARE_TEXT_PATTERNS):
+        return "cloudflare"
+    if any(pattern.search(text) for pattern in SOFT_ERROR_PATTERNS):
+        return "rate_limited"
+
+    lowered = (url or "").lower()
+    if has_password_form:
+        return "password"
+    if has_code_form:
+        return "code"
+    if _looks_like_chatgpt_home(url) or re.search(
+        r"^https?://(chatgpt\.com|chat\.openai\.com)/(?!auth)", url or "", re.IGNORECASE
+    ):
+        return "logged_in"
+    if re.search(r"/password", lowered):
+        return "password"
+    if re.search(r"email-verification|verification|verify", lowered):
+        return "code"
+    if has_email_form:
+        return "email"
+    return "unknown"
+
+
+async def _login_signal(page: Page) -> str:
+    """Read the live page and classify it (see :func:`classify_login_signal`)."""
+    has_password = False
+    has_code = False
+    has_email = False
+    for selector, key in (
+        (LOGIN_PASSWORD_SELECTOR, "password"),
+        (LOGIN_CODE_SELECTOR, "code"),
+        (LOGIN_EMAIL_INPUT_SELECTOR, "email"),
+    ):
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() > 0 and await loc.is_visible():
+                if key == "password":
+                    has_password = True
+                elif key == "code":
+                    has_code = True
+                else:
+                    has_email = True
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        body = await _page_text(page)
+    except Exception:  # noqa: BLE001
+        body = ""
+    return classify_login_signal(
+        url=page.url,
+        has_password_form=has_password,
+        has_code_form=has_code,
+        has_email_form=has_email,
+        body_text=body,
+    )
+
+
+async def wait_for_login_step(
+    page: Page,
+    *,
+    accept: tuple = ("password", "code", "logged_in"),
+    total_timeout_seconds: float = 45,
+    label: str = "relogin",
+) -> str:
+    """Wait until the login page reaches one of the accepted steps.
+
+    Returns the matched signal; raises :class:`AccountBannedError` for a
+    deactivated account (so callers can mark it instead of retrying forever) and
+    ``TimeoutError`` carrying the last observed signal otherwise.
+    """
+    deadline = asyncio.get_event_loop().time() + max(1.0, total_timeout_seconds)
+    last = "unknown"
+    while asyncio.get_event_loop().time() < deadline:
+        signal = await _login_signal(page)
+        last = signal
+        if signal in accept:
+            return signal
+        if signal == "banned":
+            try:
+                body = await _page_text(page)
+            except Exception:  # noqa: BLE001
+                body = ""
+            hit = next((p.search(body) for p in BAN_TEXT_PATTERNS if p.search(body)), None)
+            raise AccountBannedError(
+                f"{label}：账号已被 OpenAI 停用"
+                + (f"（页面提示：{hit.group(0)!r}）" if hit else "")
+            )
+        if signal == "cloudflare":
+            raise RuntimeError(f"{label}：被 Cloudflare/Turnstile 拦截，请换 IP 或用有头模式重试")
+        if signal == "rate_limited":
+            # transient: click 重试 when the page offers it, then keep waiting
+            with contextlib.suppress(Exception):
+                await _click_retry_if_present(page)
+        await asyncio.sleep(0.8)
+
+    await save_debug_artifacts(page, f"{label or 'login'}-timeout")
+    raise TimeoutError(
+        f"{label} 超时（{int(total_timeout_seconds)}s）：页面停在 {last}，当前 url: {page.url}"
+    )
+
+
 async def wait_for_url_with_recovery(
     page: Page,
     success_patterns: list[re.Pattern],
@@ -442,19 +647,23 @@ async def _submit_after_input(input_locator, page: Page, *, post_wait_seconds: f
 async def _submit_email_form(page: Page, email_input, email: str) -> None:
     """Fill and submit the current auth email form without touching provider buttons."""
     await email_input.click()
-    await email_input.fill(email)
+    await email_input.fill("")
+    await email_input.type(email, delay=35)
     try:
         value = await email_input.input_value()
     except Exception:
         value = ""
     if value.strip().lower() != email.strip().lower():
-        await email_input.fill(email)
+        await email_input.fill("")
+        await email_input.type(email, delay=35)
 
     form_id = ""
     try:
         form_id = await email_input.get_attribute("form") or ""
     except Exception:
         pass
+
+    await asyncio.sleep(0.6)
 
     clicked = False
     if form_id:
@@ -465,11 +674,25 @@ async def _submit_email_form(page: Page, email_input, email: str) -> None:
         ).first
         try:
             if await submit.count() > 0 and await submit.is_visible():
+                try:
+                    await submit.wait_for(state="visible", timeout=5000)
+                except Exception:
+                    pass
                 await submit.click(timeout=5000)
                 print("[submit-email] clicked email form submit")
                 clicked = True
         except Exception as e:
             print(f"[submit-email] form submit click failed: {e}")
+
+    if not clicked:
+        submit = page.locator('button[type=submit], input[type=submit]').first
+        try:
+            if await submit.count() > 0 and await submit.is_visible():
+                await submit.click(timeout=5000)
+                print("[submit-email] clicked generic submit")
+                clicked = True
+        except Exception as e:
+            print(f"[submit-email] generic submit click failed: {e}")
 
     if not clicked:
         try:
@@ -514,18 +737,72 @@ async def _wait_url(page: Page, patterns: list[re.Pattern], *, timeout: int = 30
     )
 
 
+def _is_email_submission_progress_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.hostname or ""
+    path = parsed.path.lower()
+    if host == "chatgpt.com" and path == "/auth/login":
+        return bool(parse_qs(parsed.query).get("email"))
+    if host in {"auth.openai.com", "auth0.openai.com", "accounts.openai.com"}:
+        return True
+    return bool(re.search(r"email-verification|verification|verify|/password", path, re.IGNORECASE))
+
+
+async def _wait_email_submission_progress(page: Page, *, timeout: int) -> None:
+    """Accept both URL navigation and same-URL auth form transitions."""
+    deadline = asyncio.get_event_loop().time() + timeout / 1000
+    while asyncio.get_event_loop().time() < deadline:
+        if _is_email_submission_progress_url(page.url):
+            return
+        next_inputs = page.locator(
+            'input[type="password"], input[autocomplete="one-time-code"], '
+            'input[inputmode="numeric"][maxlength]'
+        )
+        try:
+            count = await next_inputs.count()
+        except Exception:
+            count = 0
+        for index in range(count):
+            try:
+                if await next_inputs.nth(index).is_visible():
+                    return
+            except Exception:
+                continue
+        await asyncio.sleep(0.4)
+    raise TimeoutError(f"邮箱提交后未进入下一步（当前：{page.url}）")
+
+
+async def _email_submit_state(page: Page) -> str:
+    email = page.locator(EMAIL_INPUT_SELECTOR).first
+    submit = page.locator('button[type="submit"], input[type="submit"]').first
+
+    async def _flag(locator, method: str) -> str:
+        try:
+            if await locator.count() <= 0:
+                return "missing"
+            return "yes" if await getattr(locator, method)() else "no"
+        except Exception:
+            return "unknown"
+
+    return (
+        f"url={page.url} email_visible={await _flag(email, 'is_visible')} "
+        f"email_disabled={await _flag(email, 'is_disabled')} "
+        f"submit_disabled={await _flag(submit, 'is_disabled')}"
+    )
+
+
 async def clear_openai_state(context, *, also_storage: bool = True) -> None:
     """Clear cookies (and optionally localStorage / sessionStorage) for all
     OpenAI / ChatGPT domains. Other origins (DuckDuckGo, email providers) are
     untouched."""
     # ---- cookies ----
-    total_to_clear = 0
+    total_target = 0
     try:
         all_cookies = await context.cookies()
         for c in all_cookies:
             d = (c.get("domain") or "").lstrip(".").lower()
             if any(d == td or d.endswith("." + td) for td in OPENAI_COOKIE_DOMAINS):
-                total_to_clear += 1
+                total_target += 1
     except Exception as e:  # noqa: BLE001
         print(f"[clear] 列出 cookie 失败: {e}")
 
@@ -538,7 +815,7 @@ async def clear_openai_state(context, *, also_storage: bool = True) -> None:
             cleared += 1
         except Exception:
             continue
-    print(f"[clear] cookies: 已扫描 {total_to_clear} 个目标 cookie，清理了 {cleared} 个域")
+    print(f"[clear] cookies: 已扫描 {total_target} 个目标 cookie，清理了 {cleared} 个域")
 
     # ---- localStorage / sessionStorage / IndexedDB ----
     if not also_storage:
@@ -620,22 +897,65 @@ LOGIN_EMAIL_INPUT_SELECTOR = (
 )
 
 
-async def _wait_for_email_input_anywhere(page: Page, timeout_seconds: float = 30):
+async def _wait_for_email_input_anywhere(
+    page: Page,
+    timeout_seconds: float = 30,
+    *,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = 300,
+):
     """Wait for an email input to be visible — either inside an inline modal on
     chatgpt.com, or after redirecting to auth.openai.com."""
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_seconds
+    cloudflare_deadline: float | None = None
+    cloudflare_logged = False
+    last_cloudflare_notice = 0.0
+
+    while loop.time() < deadline:
         loc = page.locator(EMAIL_INPUT_SELECTOR).first
         try:
             if await loc.count() > 0 and await loc.is_visible():
                 return loc
         except Exception:
             pass
+
+        if await _detect_cloudflare_challenge(page):
+            if not allow_manual_cloudflare:
+                await _raise_if_cloudflare_challenge(page, label="step2-cloudflare-challenge")
+            now = loop.time()
+            if cloudflare_deadline is None:
+                cloudflare_deadline = now + cloudflare_timeout_seconds
+                deadline = cloudflare_deadline
+                print(
+                    "[cloudflare] 检测到 Cloudflare/Turnstile 验证；"
+                    f"请在打开的浏览器窗口里手动完成验证，最多等待 {int(cloudflare_timeout_seconds)}s"
+                )
+                await save_debug_artifacts(page, "step2-cloudflare-challenge")
+            if now - last_cloudflare_notice >= 15:
+                print(f"[cloudflare] 等待手动验证通过... {max(0, int(cloudflare_deadline - now))}s left")
+                last_cloudflare_notice = now
+            await asyncio.sleep(1.0)
+            continue
+
+        if cloudflare_deadline is not None and not cloudflare_logged:
+            print("[cloudflare] 验证页已消失，继续等待邮箱输入框")
+            deadline = loop.time() + timeout_seconds
+            cloudflare_logged = True
+
         await asyncio.sleep(0.4)
+    if cloudflare_deadline is not None and loop.time() >= cloudflare_deadline:
+        await save_debug_artifacts(page, "step2-cloudflare-timeout")
+        raise TimeoutError("等待 Cloudflare/Turnstile 手动验证超时")
     raise TimeoutError("等待邮箱输入框超时")
 
 
-async def step2_signup_email(page: Page, email: str) -> None:
+async def step2_signup_email(
+    page: Page,
+    email: str,
+    *,
+    allow_manual_cloudflare: bool = False,
+) -> None:
     print(f"[step 2] 点 Sign up 并填邮箱：{email}")
 
     clicked = await _try_click_signup(page, total_timeout=25)
@@ -648,14 +968,28 @@ async def step2_signup_email(page: Page, email: str) -> None:
         except Exception as e:  # noqa: BLE001
             await save_debug_artifacts(page, "step2-signup-fallback-failed")
             raise RuntimeError(f"找不到 Sign up 按钮，且 fallback 跳转也失败：{e}") from e
+    else:
+        try:
+            await asyncio.sleep(1.0)
+            if _looks_like_chatgpt_home(page.url):
+                print(f"[step 2] 点击 Sign up 后仍停留在首页，回退跳转 {CHATGPT_SIGNUP_HINT_URL}")
+                await page.goto(CHATGPT_SIGNUP_HINT_URL, wait_until="commit", timeout=45000)
+        except Exception:
+            pass
 
     # The Sign up button on chatgpt.com may either:
     #   (a) open an inline modal on chatgpt.com with an email input, or
     #   (b) navigate to auth.openai.com.
     # Wait for an email input visible in either case.
     try:
-        email_input = await _wait_for_email_input_anywhere(page, timeout_seconds=25)
+        email_input = await _wait_for_email_input_anywhere(
+            page,
+            timeout_seconds=25,
+            allow_manual_cloudflare=allow_manual_cloudflare,
+        )
     except TimeoutError:
+        if not allow_manual_cloudflare:
+            await _raise_if_cloudflare_challenge(page, label="step2-cloudflare-challenge")
         # Still nothing — try the explicit signup URL (only if we haven't already)
         if "screen_hint=signup" not in page.url and "auth.openai.com" not in page.url:
             print(f"[step 2] 当前页 ({page.url}) 没出现邮箱输入框，跳 {CHATGPT_SIGNUP_HINT_URL}")
@@ -664,32 +998,77 @@ async def step2_signup_email(page: Page, email: str) -> None:
             except Exception as e:  # noqa: BLE001
                 await save_debug_artifacts(page, "step2-fallback-after-modal")
                 raise RuntimeError(f"模态框未出现，跳 fallback URL 也失败：{e}") from e
-            email_input = await _wait_for_email_input_anywhere(page, timeout_seconds=30)
+            email_input = await _wait_for_email_input_anywhere(
+                page,
+                timeout_seconds=30,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+            )
         else:
             await save_debug_artifacts(page, "step2-no-email-input")
+            if not allow_manual_cloudflare:
+                raise HeadlessBlockedError(
+                    "headless 模式没有等到邮箱输入框。已保存 step2-no-email-input debug；"
+                    "如果 debug 页面是 Cloudflare/Turnstile，headless 不能自动通过，请取消 headless 后重试。"
+                ) from None
             raise
 
-    print(f"[step 2] 找到邮箱输入框，url={page.url}")
-    await email_input.click()
-    await email_input.fill(email)
-    await asyncio.sleep(0.3)
+    network_state: dict[str, str | int] = {}
 
-    # Submit by Enter first — avoids the "Continue with Google/Apple/..." trap
-    # on chatgpt.com signup modal.
-    await _submit_after_input(email_input, page)
+    def _on_auth_response(response) -> None:
+        try:
+            parsed = urlparse(response.url)
+            method = response.request.method.upper()
+            if parsed.hostname == "chatgpt.com" and parsed.path == "/auth/login" and method == "POST":
+                network_state["status"] = response.status
+                print(f"[step2-net] POST /auth/login -> {response.status}")
+        except Exception:
+            pass
 
-    # Now wait for the OAuth redirect to land on auth.openai.com (password page
-    # or email-verification page). Step 3 will pick up from here.
+    def _on_auth_request_failed(request) -> None:
+        try:
+            parsed = urlparse(request.url)
+            method = request.method.upper()
+            if parsed.hostname == "chatgpt.com" and parsed.path == "/auth/login" and method == "POST":
+                failure = str(request.failure or "unknown")
+                network_state["failure"] = failure
+                print(f"[step2-net] POST /auth/login failed: {failure}")
+        except Exception:
+            pass
+
+    page.on("response", _on_auth_response)
+    page.on("requestfailed", _on_auth_request_failed)
     try:
-        await _wait_url(
-            page,
-            [re.compile(r"^https://(auth|auth0|accounts)\.openai\.com/")],
-            timeout=45000,
-        )
-        print(f"[step 2] 已进入 OAuth 域，url={page.url}")
-    except TimeoutError:
-        await save_debug_artifacts(page, "step2-no-auth-redirect-after-continue")
-        raise
+        for attempt in range(1, 3):
+            print(f"[step 2] 找到邮箱输入框，提交尝试 {attempt}/2，url={page.url}")
+            await _submit_email_form(page, email_input, email)
+            try:
+                await _wait_email_submission_progress(page, timeout=30000 if attempt == 1 else 45000)
+                print(f"[step 2] 已进入下一步，url={page.url}")
+                return
+            except TimeoutError:
+                state = await _email_submit_state(page)
+                net = (
+                    f"POST status={network_state.get('status')}"
+                    if network_state.get("status") is not None
+                    else f"POST failure={network_state.get('failure') or 'no response'}"
+                )
+                print(f"[step 2] 邮箱提交卡住：{state}; {net}")
+                if attempt >= 2:
+                    await save_debug_artifacts(page, "step2-no-next-step-after-continue")
+                    raise TimeoutError(f"邮箱提交两次均未进入下一步；{net}；{state}") from None
+
+                await save_debug_artifacts(page, "step2-submit-stalled-retry")
+                print("[step 2] 刷新注册入口并重提一次")
+                await page.goto(CHATGPT_SIGNUP_HINT_URL, wait_until="commit", timeout=45000)
+                email_input = await _wait_for_email_input_anywhere(
+                    page,
+                    timeout_seconds=30,
+                    allow_manual_cloudflare=allow_manual_cloudflare,
+                )
+                network_state.clear()
+    finally:
+        page.remove_listener("response", _on_auth_response)
+        page.remove_listener("requestfailed", _on_auth_request_failed)
 
 
 async def _try_click_otp_switch(page: Page, *, total_timeout: float = 8) -> bool:
@@ -756,8 +1135,59 @@ async def _try_click_otp_switch(page: Page, *, total_timeout: float = 8) -> bool
     return False
 
 
+async def _continue_chatgpt_email_login(page: Page, email: str) -> bool:
+    """Handle the newer `chatgpt.com/auth/login?email=...` intermediate page.
+
+    After step 2, ChatGPT sometimes stays on the same login URL with the email
+    prefilled and expects one more explicit submit before moving to the OTP page.
+    """
+    try:
+        email_input = page.locator(LOGIN_EMAIL_INPUT_SELECTOR).first
+        if not await email_input.count() or not await email_input.is_visible():
+            return False
+    except Exception:
+        return False
+
+    try:
+        current = (await email_input.input_value()).strip()
+    except Exception:
+        current = ""
+    if current.lower() != email.strip().lower():
+        try:
+            await email_input.fill("", timeout=2000)
+        except Exception:
+            pass
+        try:
+            await email_input.fill(email, timeout=5000)
+        except Exception:
+            try:
+                await email_input.click(timeout=2000)
+            except Exception:
+                pass
+            await email_input.type(email, delay=35)
+        try:
+            await email_input.evaluate(
+                """(el) => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }"""
+            )
+        except Exception:
+            pass
+        current = email
+    print(f"[step 3] 检测到 chatgpt 登录中间页，email={current or '<empty>'}，补点继续")
+
+    try:
+        await _submit_email_form(page, email_input, email)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[step 3] chatgpt 登录中间页补提失败: {e}")
+        return False
+
+
 async def step3_password(
     page: Page,
+    email: str,
     password: str,
     *,
     auth_mode: str = "otp",
@@ -768,12 +1198,35 @@ async def step3_password(
     try:
         await _wait_url(
             page,
-            [re.compile(r"create-account/password|/password|email-verification|verification|verify", re.IGNORECASE)],
+            [
+                re.compile(r"create-account/password|/password|email-verification|verification|verify", re.IGNORECASE),
+                re.compile(r"^https://chatgpt\.com/auth/login\?email=", re.IGNORECASE),
+            ],
             timeout=30000,
         )
     except TimeoutError:
         await save_debug_artifacts(page, "step3-no-password-or-verify-page")
         raise
+
+    if re.search(r"^https://chatgpt\.com/auth/login\?email=", page.url, re.IGNORECASE):
+        if await _continue_chatgpt_email_login(page, email):
+            pass
+        else:
+            await save_debug_artifacts(page, "step3-chatgpt-email-stuck")
+            raise TimeoutError(f"step 3 卡在 ChatGPT 登录中间页：{page.url}")
+        await wait_for_url_with_recovery(
+            page,
+            success_patterns=[
+                re.compile(r"create-account/password|/password|email-verification|verification|verify", re.IGNORECASE),
+                re.compile(r"^https://(auth|auth0|accounts)\.openai\.com/", re.IGNORECASE),
+            ],
+            total_timeout_seconds=60,
+            label="step 3 chatgpt 中间页继续后",
+            max_retries=5,
+        )
+        if re.search(r"^https://chatgpt\.com/auth/login\?email=", page.url, re.IGNORECASE):
+            await save_debug_artifacts(page, "step3-chatgpt-email-still-stuck")
+            raise TimeoutError(f"step 3 继续后仍卡在 ChatGPT 登录中间页：{page.url}")
 
     # 已经在邮箱验证页：直接结束 step3
     if re.search(r"email-verification|verification|verify", page.url, re.IGNORECASE):
@@ -942,6 +1395,28 @@ async def _ensure_login_email_input(page: Page):
     return loc
 
 
+async def _refill_password_if_stuck(page: Page, password: str) -> bool:
+    """The password form can come back empty after a submit; refill it once."""
+    if not password:
+        return False
+    try:
+        pw = page.locator(LOGIN_PASSWORD_SELECTOR).first
+        if await pw.count() == 0 or not await pw.is_visible():
+            return False
+        current = ""
+        with contextlib.suppress(Exception):
+            current = await pw.input_value()
+        if current:
+            return False
+        print("[recover] 密码页再次出现，重填密码")
+        await pw.click()
+        await pw.fill(password)
+        await _submit_after_input(pw, page)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def step_login_existing_account(
     page: Page,
     *,
@@ -957,80 +1432,82 @@ async def step_login_existing_account(
     email_input = await _ensure_login_email_input(page)
     await _submit_email_form(page, email_input, email)
 
-    next_patterns = [
-        re.compile(r"/password", re.IGNORECASE),
-        re.compile(r"email-verification|verification|verify", re.IGNORECASE),
-        re.compile(r"chatgpt\.com/(?!auth)", re.IGNORECASE),
-    ]
+    # The next step is decided by what the page actually renders, not by its URL:
+    # the authorize endpoint shows the password / OTP form without changing URL.
+    step_budget = max(30.0, min(60.0, total_timeout_seconds / 3))
+    signal = ""
     for attempt in range(3):
         try:
-            await wait_for_url_with_recovery(
+            signal = await wait_for_login_step(
                 page,
-                success_patterns=next_patterns,
-                total_timeout_seconds=25,
+                accept=("password", "code", "logged_in"),
+                total_timeout_seconds=step_budget,
                 label="relogin 等登录下一步",
-                max_retries=2,
             )
             break
         except TimeoutError:
             if attempt >= 2:
                 raise
-            retry_input = page.locator(LOGIN_EMAIL_INPUT_SELECTOR).first
-            try:
-                if await retry_input.count() > 0 and await retry_input.is_visible():
-                    print("[relogin] 邮箱页仍未前进，重新提交邮箱")
-                    await _submit_email_form(page, retry_input, email)
-                    continue
-            except Exception:
-                pass
-            raise
+            current = await _login_signal(page)
+            if current == "email":
+                retry_input = page.locator(LOGIN_EMAIL_INPUT_SELECTOR).first
+                try:
+                    if await retry_input.count() > 0 and await retry_input.is_visible():
+                        print("[relogin] 邮箱页仍未前进，重新提交邮箱")
+                        await _submit_email_form(page, retry_input, email)
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            print(f"[relogin] 登录下一步尚未就绪（{current}），重试第 {attempt + 2} 次")
+            continue
 
     used_code = ""
-    if re.search(r"/password", page.url, re.IGNORECASE):
+    if signal == "password":
         if auth_mode == "otp" or not password:
             switched = await _try_click_otp_switch(page, total_timeout=10)
             if switched:
-                await wait_for_url_with_recovery(
+                signal = await wait_for_login_step(
                     page,
-                    success_patterns=[re.compile(r"email-verification|verification|verify", re.IGNORECASE)],
+                    accept=("code", "logged_in"),
                     total_timeout_seconds=60,
                     label="relogin OTP 切换后等验证码页",
-                    max_retries=5,
                 )
             elif password:
                 print("[relogin] 未找到 OTP 入口，回退到密码登录")
             else:
                 raise RuntimeError("账号无密码且未找到 OTP 登录入口")
 
-        if re.search(r"/password", page.url, re.IGNORECASE):
-            pw = page.locator("input[type=password]").first
+        if signal == "password":
+            pw = page.locator(LOGIN_PASSWORD_SELECTOR).first
             await pw.wait_for(state="visible", timeout=20000)
             await pw.click()
             await pw.fill(password)
             await asyncio.sleep(0.2)
             await _submit_after_input(pw, page)
-            await wait_for_url_with_recovery(
-                page,
-                success_patterns=[
-                    re.compile(r"email-verification|verification|verify", re.IGNORECASE),
-                    re.compile(r"chatgpt\.com/(?!auth)", re.IGNORECASE),
-                ],
-                total_timeout_seconds=90,
-                refill_password=password,
-                label="relogin 密码提交后",
-                max_retries=5,
-            )
+            for attempt in range(3):
+                try:
+                    signal = await wait_for_login_step(
+                        page,
+                        accept=("code", "logged_in"),
+                        total_timeout_seconds=40,
+                        label="relogin 密码提交后",
+                    )
+                    break
+                except TimeoutError:
+                    if attempt >= 2 or not await _refill_password_if_stuck(page, password):
+                        raise
+                    continue
 
-    if re.search(r"email-verification|verification|verify", page.url, re.IGNORECASE):
+    if signal == "code":
         used_code = await _fill_verification_code(page, fetch_code, label="relogin code")
 
-    await wait_for_url_with_recovery(
-        page,
-        success_patterns=[re.compile(r"chatgpt\.com/(?!auth)", re.IGNORECASE)],
-        total_timeout_seconds=total_timeout_seconds,
-        label="relogin 等登录完成",
-        max_retries=5,
-    )
+    if signal != "logged_in":
+        await wait_for_login_step(
+            page,
+            accept=("logged_in",),
+            total_timeout_seconds=total_timeout_seconds,
+            label="relogin 等登录完成",
+        )
     return used_code
 
 
@@ -1112,6 +1589,142 @@ async def _enumerate_visible_inputs(page: Page) -> list[tuple]:
     return out
 
 
+async def _profile_form_still_needs_input(page: Page) -> bool:
+    """Whether the combined profile form still has unresolved required inputs.
+
+    Newer OpenAI flows may keep the user on `/email-verification/register` even after
+    clicking the submit button, and only surface inline validation errors instead of
+    redirecting immediately. We must not treat that as a successful submit.
+    """
+    try:
+        inputs = await _enumerate_visible_inputs(page)
+    except Exception:
+        return False
+    for loc, meta in inputs:
+        kind = _classify_input(meta)
+        try:
+            value = (await loc.input_value()).strip()
+        except Exception:
+            value = ""
+        if kind in {"name", "first", "last"} and not value:
+            return True
+        if kind == "age":
+            if not value:
+                return True
+            try:
+                age = int(float(value))
+            except Exception:
+                return True
+            if age < 5 or age > 130:
+                return True
+        if kind in {"birth", "day", "month", "year"} and not value:
+            return True
+
+    try:
+        invalid_visible = await page.locator(
+            "[aria-invalid='true']:visible, [data-invalid='true']:visible, .react-aria-FieldError:visible"
+        ).count()
+        if invalid_visible > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+_DATE_ORDER_HINTS = (
+    # (regex over the placeholder/label, strftime pattern)
+    (re.compile(r"yyyy\s*[-/.年]\s*mm\s*[-/.月]\s*dd\s*日?", re.I), "%Y{sep}%m{sep}%d"),
+    (re.compile(r"mm\s*[-/.]\s*dd\s*[-/.]\s*yyyy", re.I), "%m{sep}%d{sep}%Y"),
+    (re.compile(r"dd\s*[-/.]\s*mm\s*[-/.]\s*yyyy", re.I), "%d{sep}%m{sep}%Y"),
+    (re.compile(r"年\s*/\s*月\s*/\s*日"), "%Y/%m/%d"),
+    (re.compile(r"月\s*/\s*日\s*/\s*年"), "%m/%d/%Y"),
+    (re.compile(r"日\s*/\s*月\s*/\s*年"), "%d/%m/%Y"),
+)
+
+# A whole-date field, even when the placeholder only shows separators.
+_DATE_FIELD_RE = re.compile(
+    r"yyyy|yy\s*[-/.]\s*mm|mm\s*[-/.]\s*dd|dd\s*[-/.]\s*mm|年月日|年/月/日|月/日/年|日/月/年",
+    re.I,
+)
+_AGE_WORDS = ("age", "年龄", "岁")
+_BIRTH_WORDS = ("birth", "dob", "bday", "生日", "出生", "date of birth", "date-of-birth")
+
+
+def _label_blob(meta: dict) -> str:
+    return " ".join(str(meta.get(key, "")) for key in ("placeholder", "ariaLabel", "name", "id")).lower()
+
+
+def date_hint(meta: dict) -> str | None:
+    """Return a strftime pattern matching the field's placeholder, if it hints one."""
+    blob = _label_blob(meta)
+    for pattern, template in _DATE_ORDER_HINTS:
+        if pattern.search(blob):
+            if template == "%Y/%m/%d" and "年" in blob:
+                return "%Y年%m月%d日" if "年" in blob and "/" not in blob else "%Y/%m/%d"
+            separator = "-"
+            if "/" in blob:
+                separator = "/"
+            elif "." in blob:
+                separator = "."
+            elif "年" in blob:
+                return "%Y年%m月%d日"
+            return template.replace("{sep}", separator)
+    return None
+
+
+def _is_date_like(meta: dict) -> bool:
+    return str(meta.get("type", "")) == "date" or bool(_DATE_FIELD_RE.search(_label_blob(meta)))
+
+
+def choose_birthday_strategy(kinds: set[str]) -> str:
+    """Which representation the page is actually asking for."""
+    if "birth" in kinds:
+        return "date"
+    if "age" in kinds:
+        return "age"
+    if {"day", "month", "year"} <= kinds:
+        return "split"
+    return "none"
+
+
+def birthday_age_value(birthday) -> str:
+    return str(birthday.age())
+
+
+def _format_birthday(birthday, pattern: str) -> str:
+    return pattern.replace("%Y", f"{birthday.year:04d}").replace("%m", f"{birthday.month:02d}").replace("%d", f"{birthday.day:02d}")
+
+
+def birthday_text_candidates(birthday, meta: dict) -> list[str]:
+    """Date strings to try, most likely first, based on the field's own hints."""
+    candidates: list[str] = []
+    if str(meta.get("type", "")) == "date":
+        candidates.append(birthday.iso())
+    else:
+        hint = date_hint(meta)
+        if hint:
+            candidates.append(_format_birthday(birthday, hint))
+    for pattern in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+        candidates.append(_format_birthday(birthday, pattern))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in candidates:
+        if value not in seen:
+            unique.append(value)
+            seen.add(value)
+    return unique
+
+
+def profile_needs_birthday(filled: dict[str, str], kinds: set[str]) -> bool:
+    """True when the profile page still has an empty birthday/age field to fill."""
+    strategy = choose_birthday_strategy(kinds)
+    if strategy == "none":
+        return False
+    if strategy == "split":
+        return not all(filled.get(part) for part in ("day", "month", "year"))
+    return not filled.get("birth" if strategy == "date" else "age")
+
+
 def _classify_input(meta: dict) -> str:
     blob = " ".join(str(meta.get(k, "")) for k in (
         "name", "id", "placeholder", "autocomplete", "ariaLabel"
@@ -1124,8 +1737,12 @@ def _classify_input(meta: dict) -> str:
     if typ == "date":
         return "birth"
 
-    # Age（数字、`age` 关键字）
-    if name_attr == "age" or "年龄" in placeholder:
+    blob_label = _label_blob(meta)
+    # A whole-date field must be recognised before the day/month/year heuristics,
+    # otherwise "yyyy-mm-dd" is misread as a "day" field.
+    if _is_date_like(meta) or any(word in blob_label for word in _BIRTH_WORDS):
+        return "birth"
+    if name_attr == "age" or any(word in blob_label for word in _AGE_WORDS):
         return "age"
     # 「全名 / Full name」单字段，必须比 first/last 更早判定
     if (autocomplete == "name"
@@ -1158,6 +1775,48 @@ def _classify_input(meta: dict) -> str:
     if any(k in blob for k in ("year", "年")) and "yearly" not in blob:
         return "year"
     return "unknown"
+
+
+async def fill_profile_birthday(
+    birthday,
+    classified: dict[str, list],
+    filled: dict[str, str],
+    *,
+    safe_fill,
+) -> None:
+    """Fill whichever birthday representation this page uses.
+
+    The page may ask for a birth date (native date input, or a text field with its
+    own format), a plain age, or separate day/month/year fields. `safe_fill` is
+    injected so this stays independent of the surrounding step's helpers; it must
+    return True when the value actually stuck.
+    """
+
+    async def _fill_kind(kind: str, value: str) -> bool:
+        if kind not in classified or not classified[kind]:
+            return False
+        loc, _meta = classified[kind][0]
+        return await safe_fill(loc, value, label=kind)
+
+    kinds = set(classified)
+    strategy = choose_birthday_strategy(kinds)
+    if strategy == "date":
+        loc, meta = classified["birth"][0]
+        for candidate in birthday_text_candidates(birthday, meta):
+            if await safe_fill(loc, candidate, label=f"birth({candidate})"):
+                filled["birth"] = candidate
+                return
+        print("[step 5] 出生日期所有候选格式都没写进去，稍后重试")
+    elif strategy == "age":
+        value = birthday_age_value(birthday)
+        if await _fill_kind("age", value):
+            filled["age"] = value
+    elif strategy == "split":
+        for label, value in (("day", f"{birthday.day:02d}"),
+                             ("month", f"{birthday.month:02d}"),
+                             ("year", str(birthday.year))):
+            if await _fill_kind(label, value):
+                filled[label] = value
 
 
 async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday: Birthday) -> None:
@@ -1195,8 +1854,32 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
         """fill() 自动 focus，不需要先 click——避免 React Aria 浮标拦截 click。"""
         try:
             await loc.fill(value, timeout=5000)
-            print(f"[step 5] filled {label} = {value!r}")
-            return True
+            try:
+                actual = await loc.input_value(timeout=1000)
+            except Exception:
+                actual = value
+            if actual.strip() == value.strip():
+                print(f"[step 5] filled {label} = {value!r}")
+                return True
+            print(f"[step 5] fill {label} 后值未保留（actual={actual!r}），改用逐字输入")
+            try:
+                await loc.click(timeout=2000)
+            except Exception:
+                pass
+            try:
+                await loc.press("Meta+a", timeout=1000)
+            except Exception:
+                pass
+            try:
+                await loc.press("Control+a", timeout=1000)
+            except Exception:
+                pass
+            await loc.type(value, delay=35, timeout=8000)
+            actual = await loc.input_value(timeout=1000)
+            if actual.strip() == value.strip():
+                print(f"[step 5] filled {label} = {value!r} (via type)")
+                return True
+            raise RuntimeError(f"value mismatch after type: {actual!r}")
         except Exception as e1:  # noqa: BLE001
             print(f"[step 5] fill {label} 失败: {e1}；试 force focus + 直接赋值")
             try:
@@ -1224,25 +1907,69 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
         loc, _ = classified[kind][0]
         return await _safe_fill(loc, value, label=kind)
 
+    filled: dict[str, str] = {}
+
     filled_first = await _fill_kind("first", first_name)
     filled_last = await _fill_kind("last", last_name)
+    if filled_first:
+        filled["first"] = first_name
+    if filled_last:
+        filled["last"] = last_name
     if not (filled_first and filled_last):
         # 单个 Full name 字段
-        await _fill_kind("name", f"{first_name} {last_name}")
+        if await _fill_kind("name", f"{first_name} {last_name}"):
+            filled["name"] = f"{first_name} {last_name}"
     if not filled_first and not filled_last and "unknown" in classified and len(classified["unknown"]) >= 2:
         await _safe_fill(classified["unknown"][0][0], first_name, label="unknown[0]→first")
         await _safe_fill(classified["unknown"][1][0], last_name, label="unknown[1]→last")
 
-    if "birth" in classified:
+    tried_birth_formats: list[str] = []
+
+    async def _try_next_birth_format() -> bool:
+        """A text date field can accept a value yet still be rejected by the form.
+
+        The placeholder usually states the format, but when it lies the only honest
+        signal is the form's own validation feedback, so step through the remaining
+        candidates instead of guessing once.
+        """
+        if "birth" not in classified or not classified["birth"]:
+            return False
         loc, meta = classified["birth"][0]
-        value = birthday.iso() if meta.get("type") == "date" else f"{birthday.month:02d}/{birthday.day:02d}/{birthday.year}"
-        await _safe_fill(loc, value, label="birth")
-    elif "age" in classified:
-        await _fill_kind("age", str(birthday.age()))
-    elif all(k in classified for k in ("day", "month", "year")):
-        await _fill_kind("day", f"{birthday.day:02d}")
-        await _fill_kind("month", f"{birthday.month:02d}")
-        await _fill_kind("year", str(birthday.year))
+        for candidate in birthday_text_candidates(birthday, meta):
+            if candidate in tried_birth_formats:
+                continue
+            tried_birth_formats.append(candidate)
+            if await _safe_fill(loc, candidate, label=f"birth reformat({candidate})"):
+                filled["birth"] = candidate
+                return True
+        return False
+
+    # The name field is sometimes revealed first and the birthday/age field only
+    # appears afterwards, so re-scan the page instead of trusting one snapshot.
+    await fill_profile_birthday(birthday, classified, filled, safe_fill=_safe_fill)
+    if filled.get("birth"):
+        tried_birth_formats.append(filled["birth"])
+    if profile_needs_birthday(filled, set(classified)):
+        for attempt in range(1, 4):
+            await asyncio.sleep(0.6)
+            rescan = await _enumerate_visible_inputs(page)
+            rescanned: dict[str, list] = {}
+            for loc, meta in rescan:
+                kind = _classify_input(meta)
+                if kind not in rescanned:
+                    print(f"  [rescan {attempt}] new input kind={kind}  placeholder={meta.get('placeholder')!r}")
+                    rescanned.setdefault(kind, []).append((loc, meta))
+            merged = {kind: items for kind, items in classified.items()}
+            for kind, items in rescanned.items():
+                merged.setdefault(kind, items)
+            classified = merged
+            if not profile_needs_birthday(filled, set(classified)):
+                break
+            await fill_profile_birthday(birthday, classified, filled, safe_fill=_safe_fill)
+
+    strategy = choose_birthday_strategy(set(classified))
+    strategy_text = {"date": "出生日期", "age": "年龄", "split": "日/月/年 三格", "none": "未发现年龄/出生日期字段"}[strategy]
+    print(f"[step 5] 生日字段类型={strategy_text}  已填={filled or '无'}")
 
     consents = page.locator("input[type=checkbox]")
     try:
@@ -1263,6 +1990,14 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
         try:
             await _click_first(page, COMPLETE_TEXTS, timeout=8000 if required else 3000)
             print(f"[step 5] 已点击 完成账户创建/继续 按钮{suffix}")
+            try:
+                submitted = await page.evaluate(
+                    "() => { if (typeof window.__submitPendingForm === 'function') { window.__submitPendingForm(); return true; } return false; }"
+                )
+                if submitted:
+                    print(f"[step 5] 已触发 __submitPendingForm{suffix}")
+            except Exception:
+                pass
             return True
         except (PWTimeout, TimeoutError):
             try:
@@ -1270,6 +2005,14 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
                 if await submit.count() > 0:
                     await submit.click(timeout=5000 if required else 2500)
                     print(f"[step 5] 已点击 button[type=submit]（兜底）{suffix}")
+                    try:
+                        submitted = await page.evaluate(
+                            "() => { if (typeof window.__submitPendingForm === 'function') { window.__submitPendingForm(); return true; } return false; }"
+                        )
+                        if submitted:
+                            print(f"[step 5] 已触发 __submitPendingForm（兜底）{suffix}")
+                    except Exception:
+                        pass
                     return True
                 raise PWTimeout("no submit button")
             except Exception as e:  # noqa: BLE001
@@ -1291,7 +2034,7 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
                 print(f"[step 5] 资料提交后已进入 {url}")
                 return
 
-            if "auth.openai.com/about-you" not in url:
+            if "auth.openai.com/about-you" not in url and "email-verification/register" not in url:
                 print(f"[step 5] 资料提交后离开资料页 url={url}")
                 return
 
@@ -1314,6 +2057,21 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
                 await asyncio.sleep(2)
                 continue
 
+            if await _profile_form_still_needs_input(page):
+                if asyncio.get_event_loop().time() - last_submit_at >= 3 and resubmit_count < 2:
+                    resubmit_count += 1
+                    if await _try_next_birth_format():
+                        print(f"[step 5] 表单校验未通过，换一种日期格式重填：{filled.get('birth')}")
+                        last_submit_at = asyncio.get_event_loop().time()
+                        await asyncio.sleep(1)
+                        continue
+                    if await _click_profile_complete(required=False, reason=f"表单仍未通过校验，重提 {resubmit_count}/2"):
+                        last_submit_at = asyncio.get_event_loop().time()
+                        await asyncio.sleep(2)
+                        continue
+                await asyncio.sleep(1)
+                continue
+
             # about-you 停留太久时，说明提交没有真正发出或后端没响应，补点一次完成。
             if asyncio.get_event_loop().time() - last_submit_at >= 8 and resubmit_count < 2:
                 resubmit_count += 1
@@ -1328,6 +2086,16 @@ async def step5_profile(page: Page, *, first_name: str, last_name: str, birthday
         raise TimeoutError(f"step 5 资料提交后仍停留在 {page.url}，不进入 step 6")
 
     await asyncio.sleep(0.4)
+    # A recognised-but-empty birthday field means the form would fail validation;
+    # fill it (re-scanning once more) before submitting rather than resubmitting blind.
+    if profile_needs_birthday(filled, set(classified)):
+        await asyncio.sleep(0.8)
+        await fill_profile_birthday(birthday, classified, filled, safe_fill=_safe_fill)
+        if profile_needs_birthday(filled, set(classified)):
+            print("[step 5] 警告：年龄/出生日期字段仍为空，提交可能被校验拦下")
+        else:
+            print(f"[step 5] 提交前补齐生日字段：{filled}")
+
     await _click_profile_complete(required=True)
     await _wait_profile_submit_result()
 
@@ -1348,11 +2116,23 @@ async def step6_wait_success(page: Page) -> None:
 
     if "chatgpt.com" not in page.url and "chat.openai.com" not in page.url:
         print(f"[step 6] 仍在 {page.url}，主动跳 chatgpt.com")
-        try:
-            await page.goto(CHATGPT_HOME, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_load_state("networkidle", timeout=10000)
-        except PWTimeout:
-            pass
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                await page.goto(CHATGPT_HOME, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
+                return
+            except PWTimeout as e:
+                last_error = e
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                if "ERR_CONNECTION_CLOSED" in str(e):
+                    print(f"[step 6] 跳 chatgpt.com 遇到连接关闭，重试 {attempt}/3")
+                    await asyncio.sleep(min(2 * attempt, 5))
+                    continue
+                raise
+        if last_error:
+            raise last_error
     else:
         try:
             await page.wait_for_load_state("networkidle", timeout=8000)

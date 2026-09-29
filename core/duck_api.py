@@ -20,6 +20,8 @@ import os
 import urllib.error
 import urllib.request
 
+from core.http_utils import open_url
+
 DEFAULT_BASE_URL = "https://quack.duckduckgo.com"
 ADDRESSES_PATH = "/api/email/addresses"
 
@@ -30,6 +32,7 @@ def generate_private_address(
     base_url: str = DEFAULT_BASE_URL,
     timeout: float = 15.0,
     proxy: str | None = None,
+    proxy_insecure: bool = False,
 ) -> str:
     """Call POST /api/email/addresses and return the freshly generated full
     `<random>@duck.com` address."""
@@ -49,15 +52,8 @@ def generate_private_address(
         data=b"",  # the API needs a POST body, even if empty
     )
 
-    if proxy:
-        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        opener = urllib.request.build_opener(handler)
-    else:
-        # Honour HTTP(S)_PROXY env vars if user set them.
-        opener = urllib.request.build_opener()
-
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with open_url(req, proxy=proxy, insecure=proxy_insecure, timeout=timeout) as resp:
             body = resp.read()
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace")
@@ -65,7 +61,14 @@ def generate_private_address(
             f"Duck API HTTP {e.code} {e.reason}: {raw[:300]}"
         ) from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Duck API 网络错误：{e.reason}") from e
+        reason = str(e.reason)
+        if proxy and not proxy_insecure and (
+            "CERTIFICATE_VERIFY_FAILED" in reason or "self signed certificate in certificate chain" in reason
+        ):
+            raise RuntimeError(
+                f"Duck API 网络错误：{reason}。当前代理看起来在注入 HTTPS 证书，请重试并加上 --proxy-insecure"
+            ) from e
+        raise RuntimeError(f"Duck API 网络错误：{reason}") from e
 
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))

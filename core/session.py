@@ -6,7 +6,6 @@ import asyncio
 import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from playwright.async_api import Page
@@ -127,25 +126,21 @@ async def fetch_session(
     return last_result
 
 
-def save_account_snapshot(
-    out_dir: Path,
+def build_account_snapshot(
     email: str,
-    password: str,
     *,
     session_result: dict[str, Any] | None,
     extras: dict[str, Any] | None = None,
-) -> Path:
-    out_dir = Path(out_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+) -> dict[str, Any]:
+    """Build account metadata in memory; durable storage belongs to AccountStore."""
     snapshot: dict[str, Any] = {
         "email": email,
-        "password": password,
         "savedAt": datetime.now(timezone.utc).isoformat(),
         "sessionFetchOk": bool(session_result and session_result.get("ok")),
         "sessionStatus": int((session_result or {}).get("status") or 0),
         "session": (session_result or {}).get("parsed"),
         "sessionRaw": (session_result or {}).get("text") or "",
+        "refresh_token": "",
     }
     err = (session_result or {}).get("error")
     if err:
@@ -153,6 +148,7 @@ def save_account_snapshot(
     if extras:
         snapshot.update(extras)
 
-    target = out_dir / f"{sanitize_filename_segment(email)}.json"
-    target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    return target
+    codex = snapshot.get("codexAuth")
+    if isinstance(codex, dict):
+        snapshot["refresh_token"] = codex.get("refresh_token") or snapshot.get("refresh_token") or ""
+    return snapshot

@@ -2,6 +2,7 @@
 config.local.json
 .env
 .env.*
+!.env.example
 .DS_Store
 
 # Runtime output: account JSON includes passwords/session tokens.
@@ -11,6 +12,7 @@ relogin_required.json
 # Local assistant/editor state
 .claude/
 .codex/
+.playwright-cli/
 
 # Python caches and virtual environments
 __pycache__/

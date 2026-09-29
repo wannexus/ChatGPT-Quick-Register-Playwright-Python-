@@ -44,6 +44,42 @@ class QQImapConfig:
     extra_mailboxes: tuple = ("Junk",)
 
 
+class QQImapAuthError(RuntimeError):
+    """Raised when QQ rejects the IMAP account or authorization code."""
+
+
+def _imap_error_text(exc: BaseException) -> str:
+    if exc.args and isinstance(exc.args[0], bytes):
+        return exc.args[0].decode("utf-8", errors="replace")
+    return str(exc)
+
+
+def _login(conn: imaplib.IMAP4_SSL, config: QQImapConfig) -> None:
+    try:
+        conn.login(config.user, config.password)
+    except imaplib.IMAP4.error as exc:
+        detail = _imap_error_text(exc)
+        raise QQImapAuthError(
+            "QQ IMAP 登录被拒绝。请确认 IMAP/SMTP 服务已开启，并使用新生成的 16 位授权码"
+            "（不是 QQ 登录密码）；若刚才连续登录失败，请等待频率限制解除后再试。"
+            f" QQ 返回：{detail}"
+        ) from exc
+
+
+def check_qq_imap_login(config: QQImapConfig, *, timeout: float = 12.0) -> None:
+    """Open one IMAP session to validate credentials before a registration run."""
+    conn: imaplib.IMAP4_SSL | None = None
+    try:
+        conn = imaplib.IMAP4_SSL(config.host, config.port, timeout=timeout)
+        _login(conn, config)
+    except QQImapAuthError:
+        raise
+    except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError) as exc:
+        raise RuntimeError(f"QQ IMAP 连接失败：{_imap_error_text(exc)}") from exc
+    finally:
+        _safe_logout(conn)
+
+
 def _decode(value: str | None) -> str:
     if not value:
         return ""
@@ -176,8 +212,8 @@ def fetch_qq_code(
             print(f"[qq-imap] poll {attempt}/{max_attempts}  interval={interval_seconds:g}s")
             try:
                 if conn is None:
-                    conn = imaplib.IMAP4_SSL(config.host, config.port)
-                    conn.login(config.user, config.password)
+                    conn = imaplib.IMAP4_SSL(config.host, config.port, timeout=15)
+                    _login(conn, config)
 
                 checked = 0
                 for box in mailboxes:
@@ -245,6 +281,8 @@ def fetch_qq_code(
 
                 if checked:
                     print(f"[qq-imap] checked {checked} new message header(s)")
+            except QQImapAuthError:
+                raise
             except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError) as e:
                 last_error = e
                 print(f"[qq-imap] reconnect after IMAP error: {e}")
@@ -272,3 +310,46 @@ def fetch_qq_code(
     if last_error:
         msg += f"；最后一次错误：{last_error}"
     raise TimeoutError(msg)
+
+
+def scan_qq_messages(
+    config: QQImapConfig,
+    *,
+    since_ts: float | None = None,
+    limit: int = MAX_RECENT_UIDS_PER_BOX,
+) -> list[dict]:
+    """Read recent inbox/Junk messages as plain records for ban detection.
+
+    Unlike :func:`fetch_qq_code` this applies no sender/subject filter and does
+    not look for a code — the caller classifies each message itself.
+    """
+    from core.ban_check import message_to_record
+
+    conn: imaplib.IMAP4_SSL | None = None
+    records: list[dict] = []
+    try:
+        conn = imaplib.IMAP4_SSL(config.host, config.port, timeout=15)
+        _login(conn, config)
+        for box in (config.mailbox, *config.extra_mailboxes):
+            typ, _ = conn.select(box, readonly=True)
+            if typ != "OK":
+                continue
+            typ, data = conn.uid("SEARCH", None, "ALL")
+            if typ != "OK":
+                continue
+            for uid in reversed(_uids_from_search(data)[-max(1, limit):]):
+                typ, raw = conn.uid("FETCH", uid, "(RFC822)")
+                if typ != "OK" or not raw:
+                    continue
+                payload = _payload_from_fetch(raw)
+                if not payload:
+                    continue
+                record = message_to_record(payload)
+                if since_ts is not None and record.get("date_ts") and record["date_ts"] < since_ts - 30:
+                    continue
+                record["uid"] = uid.decode("ascii", errors="replace")
+                record["mailbox"] = box
+                records.append(record)
+    finally:
+        _safe_logout(conn)
+    return records

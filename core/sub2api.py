@@ -1,12 +1,16 @@
 """把账号 JSON 转 / 推到 SUB2API 的工具。
 
-SUB2API 的关键端点（参考自原项目 codex-oauth-automation-extension-Ultra8.0
-content/sub2api-panel.js）：
-  POST /api/v1/auth/login                {email, password} -> {access_token, ...}
-  GET  /api/v1/admin/groups/all          (Bearer token) -> [...] 分组列表
-  POST /api/v1/admin/accounts            (Bearer token) -> 创建账号
+SUB2API 管理端鉴权（参考上游 Wei-Shaw/sub2api 的 sub2api-admin skill）：
+  首选  x-api-key: <管理员 API Key>
+  兜底  Authorization: Bearer <管理员 JWT>（POST /api/v1/auth/login 取得）
+
+用到的端点：
+  POST /api/v1/auth/login                {email, password} -> {access_token, ...}（仅 JWT 兜底）
+  GET  /api/v1/admin/groups/all          分组列表
+  POST /api/v1/admin/accounts            创建账号
 
 所有响应包了一层 {code: 0, message: "...", data: {...}}；code != 0 视为失败。
+鉴权失败返回 INVALID_ADMIN_KEY，此时需在后台重新生成管理员 API Key。
 """
 
 from __future__ import annotations
@@ -17,7 +21,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+
+from core.http_utils import open_url
 
 # 用浏览器化的 UA + headers，避免 Cloudflare 的 1010 / 1020 拦截
 _BROWSER_UA = (
@@ -46,8 +52,9 @@ CRED_KEYS_FROM_CODEX = (
 @dataclass
 class Sub2ApiTarget:
     base_url: str
-    email: str
-    password: str
+    email: str = ""            # JWT fallback only (POST /api/v1/auth/login)
+    password: str = ""         # JWT fallback only
+    admin_api_key: str = ""    # preferred auth: x-api-key header
     group_name: str = "codex"
     concurrency: int = 5
     priority: int = 1
@@ -55,6 +62,7 @@ class Sub2ApiTarget:
     auto_pause_on_expired: bool = True
     privacy_mode: str = "training_off"
     proxy: Optional[str] = None  # 走代理访问 SUB2API 后端（可选）
+    proxy_insecure: bool = False
 
     def origin(self) -> str:
         """只保留 scheme://host[:port]，丢掉 path/query/fragment。
@@ -157,21 +165,18 @@ def build_payload_from_account(
 
 
 def collect_accounts_from_dir(
-    out_dir: Path,
+    accounts: Iterable[Mapping[str, Any]],
     *,
     skip_empty: bool = True,
     require_codex: bool = False,
-) -> List[Tuple[Path, Dict[str, Any]]]:
-    """读取 output/*.json。
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """筛选 MySQL 账号记录（label 为 email）。
     skip_empty=True 时跳过既没 codexAuth.access_token 也没 session.accessToken 的；
     require_codex=True 时只保留有完整 codexAuth 的（推荐用于 SUB2API 导出）。
     """
-    rows: List[Tuple[Path, Dict[str, Any]]] = []
-    for f in sorted(out_dir.glob("*.json")):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+    rows: List[Tuple[str, Dict[str, Any]]] = []
+    for account in accounts:
+        data = dict(account or {})
         codex = data.get("codexAuth")
         has_codex = isinstance(codex, dict) and bool(codex.get("access_token"))
         sess = data.get("session") if isinstance(data.get("session"), dict) else None
@@ -181,12 +186,13 @@ def collect_accounts_from_dir(
             continue
         if skip_empty and not (has_codex or has_session):
             continue
-        rows.append((f, data))
+        label = str(data.get("email") or "").strip() or f"id={data.get('id')}"
+        rows.append((label, data))
     return rows
 
 
 def build_export_bundle(
-    out_dir: Path,
+    accounts: Iterable[Mapping[str, Any]],
     *,
     concurrency: int = 5,
     priority: int = 1,
@@ -203,7 +209,7 @@ def build_export_bundle(
     """
     accepted: List[Dict[str, Any]] = []
     skipped: List[Dict[str, str]] = []
-    for path, account in collect_accounts_from_dir(out_dir, skip_empty=skip_empty, require_codex=require_codex):
+    for label, account in collect_accounts_from_dir(accounts, skip_empty=skip_empty, require_codex=require_codex):
         try:
             payload = build_payload_from_account(
                 account,
@@ -216,7 +222,7 @@ def build_export_bundle(
             )
             accepted.append(payload)
         except Exception as e:  # noqa: BLE001
-            skipped.append({"file": path.name, "reason": str(e)})
+            skipped.append({"email": label, "reason": str(e)})
 
     from datetime import datetime, timezone
     bundle: Dict[str, Any] = {
@@ -241,15 +247,16 @@ def _request_json(
     path: str,
     *,
     method: str = "GET",
-    token: Optional[str] = None,
+    headers: Optional[Mapping[str, str]] = None,
     body: Any = None,
     proxy: Optional[str] = None,
+    proxy_insecure: bool = False,
     timeout: float = 20.0,
 ) -> Any:
     url = f"{origin.rstrip('/')}{path}"
     parsed_origin = urllib.parse.urlparse(origin)
     referer_root = f"{parsed_origin.scheme}://{parsed_origin.netloc}/admin"
-    headers = {
+    request_headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "User-Agent": _BROWSER_UA,
@@ -259,23 +266,15 @@ def _request_json(
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
+    request_headers.update(dict(headers or {}))
     data: Optional[bytes] = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json; charset=utf-8"
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+        request_headers["Content-Type"] = "application/json; charset=utf-8"
 
-    req = urllib.request.Request(url, method=method.upper(), data=data, headers=headers)
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
-    else:
-        opener = urllib.request.build_opener()
-
+    req = urllib.request.Request(url, method=method.upper(), data=data, headers=request_headers)
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with open_url(req, proxy=proxy, insecure=proxy_insecure, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
         try:
@@ -283,7 +282,7 @@ def _request_json(
         except Exception:
             raw = b""
         text = raw.decode("utf-8", errors="replace")
-        raise RuntimeError(f"SUB2API HTTP {e.code} {e.reason} {path}: {text[:300]}") from e
+        raise RuntimeError(_explain_error(f"SUB2API HTTP {e.code} {e.reason} {path}: {text[:300]}")) from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"SUB2API 网络错误 {path}: {e.reason}") from e
 
@@ -297,27 +296,53 @@ def _request_json(
     if isinstance(parsed, dict) and "code" in parsed:
         if parsed.get("code") == 0:
             return parsed.get("data")
-        raise RuntimeError(parsed.get("message") or parsed.get("detail") or f"SUB2API code={parsed.get('code')} on {path}")
+        detail = parsed.get("message") or parsed.get("detail") or f"SUB2API code={parsed.get('code')} on {path}"
+        raise RuntimeError(_explain_error(str(detail)))
     return parsed
 
 
+def _explain_error(message: str) -> str:
+    """Turn the backend's auth error into something the operator can act on."""
+    if "INVALID_ADMIN_KEY" in message:
+        return f"{message} —— 管理员 API Key 无效或已失效，请在 SUB2API 后台重新生成后再更新设置"
+    return message
+
+
+def auth_headers(target: Sub2ApiTarget) -> Dict[str, str]:
+    """Admin credentials for SUB2API, following the upstream admin contract.
+
+    `x-api-key` (admin API key) is preferred; a JWT obtained from the admin
+    email/password is only the documented fallback.
+    """
+    key = (target.admin_api_key or "").strip()
+    if key:
+        return {"x-api-key": key}
+    if (target.email or "").strip() and target.password:
+        return {"Authorization": f"Bearer {login(target)}"}
+    raise RuntimeError(
+        "SUB2API 需要管理员 API Key（请求头 x-api-key）；"
+        "如该部署未启用 API Key，可改用管理员邮箱+密码走 JWT 兜底"
+    )
+
+
 def login(target: Sub2ApiTarget) -> str:
-    """登录 SUB2API，返回 access_token。"""
+    """JWT 兜底：用管理员邮箱密码登录，返回 access_token。"""
     data = _request_json(
         target.origin(), "/api/v1/auth/login",
         method="POST",
         body={"email": target.email, "password": target.password},
         proxy=target.proxy,
+        proxy_insecure=target.proxy_insecure,
     )
     if not isinstance(data, dict) or not data.get("access_token"):
         raise RuntimeError("SUB2API /auth/login 未返回 access_token")
     return data["access_token"]
 
 
-def list_groups(target: Sub2ApiTarget, token: str) -> List[Dict[str, Any]]:
+def list_groups(target: Sub2ApiTarget, headers: Mapping[str, str]) -> List[Dict[str, Any]]:
     data = _request_json(
         target.origin(), "/api/v1/admin/groups/all",
-        method="GET", token=token, proxy=target.proxy,
+        method="GET", headers=headers, proxy=target.proxy, proxy_insecure=target.proxy_insecure,
     )
     return data if isinstance(data, list) else []
 
@@ -335,10 +360,10 @@ def resolve_group_id(groups: List[Dict[str, Any]], name: str) -> Optional[int]:
     return None
 
 
-def create_account(target: Sub2ApiTarget, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def create_account(target: Sub2ApiTarget, headers: Mapping[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
     return _request_json(
         target.origin(), "/api/v1/admin/accounts",
-        method="POST", token=token, body=payload, proxy=target.proxy,
+        method="POST", headers=headers, body=payload, proxy=target.proxy, proxy_insecure=target.proxy_insecure,
     ) or {}
 
 
@@ -353,8 +378,8 @@ class PushResult:
     skipped: List[Dict[str, str]] = field(default_factory=list)
 
 
-def push_directory(
-    out_dir: Path,
+def push_accounts(
+    accounts: Iterable[Mapping[str, Any]],
     target: Sub2ApiTarget,
     *,
     skip_empty: bool = True,
@@ -362,23 +387,24 @@ def push_directory(
     dry_run: bool = False,
     on_progress=None,  # callable(stage, info)
 ) -> PushResult:
-    """登录 SUB2API → 解析 group → 把每个有效账号挨个创建过去。"""
+    """鉴权（管理员 API Key 优先）→ 解析 group → 把每个有效账号挨个创建过去。"""
     result = PushResult()
 
-    if on_progress: on_progress("login", {"origin": target.origin(), "email": target.email})
-    token = login(target)
-    if on_progress: on_progress("login_ok", {})
+    auth_mode = "x-api-key" if (target.admin_api_key or "").strip() else "jwt"
+    if on_progress: on_progress("auth", {"origin": target.origin(), "mode": auth_mode})
+    headers = auth_headers(target)
+    if on_progress: on_progress("auth_ok", {"mode": auth_mode})
 
     if on_progress: on_progress("groups", {})
-    groups = list_groups(target, token)
+    groups = list_groups(target, headers)
     group_id = resolve_group_id(groups, target.group_name)
     if not group_id:
         names = ", ".join(str(g.get("name", "?")) for g in groups[:20])
         raise RuntimeError(f"分组 {target.group_name!r} 在 SUB2API 中找不到。已有分组：{names}")
     if on_progress: on_progress("groups_ok", {"groupId": group_id, "groupName": target.group_name})
 
-    rows = collect_accounts_from_dir(out_dir, skip_empty=skip_empty, require_codex=require_codex)
-    for path, account in rows:
+    rows = collect_accounts_from_dir(accounts, skip_empty=skip_empty, require_codex=require_codex)
+    for label, account in rows:
         try:
             payload = build_payload_from_account(
                 account,
@@ -392,26 +418,26 @@ def push_directory(
             # SUB2API create 接口要 notes 字段（即使是空）
             payload.setdefault("notes", "")
         except Exception as e:  # noqa: BLE001
-            result.skipped.append({"file": path.name, "reason": str(e)})
-            if on_progress: on_progress("skip", {"file": path.name, "reason": str(e)})
+            result.skipped.append({"email": label, "reason": str(e)})
+            if on_progress: on_progress("skip", {"email": label, "reason": str(e)})
             continue
 
         if dry_run:
-            result.pushed.append({"file": path.name, "name": payload["name"], "dryRun": True})
-            if on_progress: on_progress("dry", {"file": path.name})
+            result.pushed.append({"email": label, "name": payload["name"], "dryRun": True})
+            if on_progress: on_progress("dry", {"email": label})
             continue
 
         try:
-            created = create_account(target, token, payload)
+            created = create_account(target, headers, payload)
             result.pushed.append({
-                "file": path.name,
+                "email": label,
                 "name": payload["name"],
                 "id": created.get("id") if isinstance(created, dict) else None,
             })
-            if on_progress: on_progress("ok", {"file": path.name, "id": (created or {}).get("id")})
+            if on_progress: on_progress("ok", {"email": label, "id": (created or {}).get("id")})
         except Exception as e:  # noqa: BLE001
-            result.failed.append({"file": path.name, "name": payload["name"], "error": str(e)})
-            if on_progress: on_progress("fail", {"file": path.name, "error": str(e)})
+            result.failed.append({"email": label, "name": payload["name"], "error": str(e)})
+            if on_progress: on_progress("fail", {"email": label, "error": str(e)})
 
     if on_progress: on_progress("done", {
         "pushed": len(result.pushed),
