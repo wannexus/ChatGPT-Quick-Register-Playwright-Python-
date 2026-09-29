@@ -44,6 +44,9 @@ from core.duck_api import generate_private_address as duck_api_generate
 from core.icloud import fetch_icloud_hide_my_email
 from core import mhjc
 from core import qq_imap
+from core import ant_browser
+from core import fingerprint as fingerprint_module
+from core import stealth
 from core.qq_imap import QQImapConfig, fetch_qq_code
 from data.names import generate_password
 
@@ -139,6 +142,83 @@ def _clear_stale_profile_locks(user_data_dir: Path) -> None:
             pass
 
 
+# Playwright 的「浏览器/标签页没了」类错误。真实事故（2026-09-29 15:01）：
+# 首页卡在 Cloudflare 托管挑战（标题泰语 "รอสักครู่..."，英文 "Just a moment..."），
+# 用户把看起来卡住的窗口关掉 -> Locator.wait_for 抛 TargetClosedError，
+# 整轮注册直接作废（邮箱已建好、号码已买但都没用上）。
+BROWSER_GONE_MARKERS = (
+    "has been closed",
+    "target page, context or browser",
+    "browser has been closed",
+    "browser has disconnected",
+    "connection closed",
+    "target crashed",
+    "browser closed",
+    "page closed",
+)
+
+
+def _is_browser_gone(error: BaseException | None) -> bool:
+    """这是「浏览器/标签页被关掉」而不是「页面上出了问题」吗？
+
+    Playwright 的 TargetClosedError 只从私有模块 `_impl._errors` 导出，所以按类名
+    判定，并顺着 cause/context 链找，避免包住它的 RuntimeError 漏判。
+    """
+    if error is None:
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in {"TargetClosedError", "BrowserClosedError"}:
+            return True
+        message = str(current).lower()
+        if any(marker in message for marker in BROWSER_GONE_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+class _BrowserWatchdog:
+    """窗口被关闭/页面崩溃时立刻打日志，避免下次又只有一句 TargetClosedError。"""
+
+    def __init__(self, label: str = "browser") -> None:
+        self.label = label
+        self.done = False
+        self.events: list[str] = []
+
+    def attach(self, context, page) -> None:
+        # 测试里的假 context/page 没有 .on()，真 Playwright 对象才有。
+        for target, event, message in (
+            (page, "close", "自动化标签页/窗口被关闭"),
+            (page, "crash", "页面渲染进程崩溃（crash）"),
+            (context, "close", "浏览器上下文被关闭（窗口被关或浏览器退出）"),
+        ):
+            register_listener = getattr(target, "on", None)
+            if register_listener is None:
+                continue
+            try:
+                register_listener(event, self._handler(message))
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _handler(self, message: str):
+        def _note(*_args) -> None:
+            if self.done:
+                return
+            stamp = time.strftime("%H:%M:%S")
+            self.events.append(f"{message}@{stamp}")
+            print(
+                f"[{self.label}] ⚠ {message}（{stamp}）—— 这多半是窗口被手动关闭、"
+                f"Chrome 崩溃或系统清理进程所致"
+            )
+
+        return _note
+
+    def summary(self) -> str:
+        return "；".join(self.events) if self.events else "无"
+
+
 def _build_playwright_proxy(proxy_value: str) -> dict | None:
     raw = str(proxy_value or "").strip()
     if not raw:
@@ -212,7 +292,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--mhjc-username", default=LOCAL_CONFIG.get("mhjcUsername", ""),
-        help="自定义 MHJC 邮箱用户名（不含 @域名）；留空则由服务端随机生成",
+        help="自定义 MHJC 邮箱用户名（不含 @域名）；留空则按注册档案姓名随机生成",
+    )
+    p.add_argument(
+        "--mhjc-name-style", choices=["name", "provider"], dest="mhjc_name_style",
+        default=LOCAL_CONFIG.get("mhjcNameStyle") or os.environ.get("QR_MHJC_NAME_STYLE") or "name",
+        help="留空用户名时的命名方式：name=按姓名生成（如 emma.wilson，默认）；provider=服务端默认 temp_xxxx",
     )
     p.add_argument(
         "--mhjc-ttl", type=int, default=_env_int(mhjc.DEFAULT_TTL_SECONDS, os.environ.get("QR_MHJC_TTL")),
@@ -252,6 +337,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--headless", action="store_true", default=_saved_flag("headless"), help="以无头模式运行（不推荐：易触发 Cloudflare）")
     p.add_argument("--no-persistent", action="store_true", default=_saved_flag("noPersistent"), help="不使用持久化 profile（每次都干净环境）")
+    p.add_argument(
+        "--fingerprint-browser", choices=("stealth", "ant", "off"), dest="fingerprint_browser",
+        default=(LOCAL_CONFIG.get("fingerprintBrowser") or os.environ.get("QR_FINGERPRINT_BROWSER") or "stealth"),
+        help="指纹方案：stealth=内置纯 Playwright 指纹层（默认，每个账号一套指纹，不依赖外部浏览器）；"
+             "ant=接入本机 AntBrowser（可选，不再默认启用）；off=关闭指纹层（老行为）",
+    )
+    p.add_argument(
+        "--ant-api-base", dest="ant_api_base",
+        default=(LOCAL_CONFIG.get("antApiBase") or os.environ.get("QR_ANT_API_BASE") or ant_browser.DEFAULT_API_BASE),
+        help=f"AntBrowser 本地 Launch API 地址（默认 {ant_browser.DEFAULT_API_BASE}）",
+    )
+    p.add_argument(
+        "--ant-api-key", dest="ant_api_key",
+        default=(LOCAL_CONFIG.get("antApiKey") or os.environ.get("QR_ANT_API_KEY") or ""),
+        help="AntBrowser Launch API Key（在 AntBrowser「设置 → 启动服务」开启鉴权时必填）",
+    )
+    p.add_argument(
+        "--ant-core-id", dest="ant_core_id",
+        default=(LOCAL_CONFIG.get("antCoreId") or os.environ.get("QR_ANT_CORE_ID") or ""),
+        help="AntBrowser 指纹实例使用的内核 ID（默认取已有实例的内核）",
+    )
+    p.add_argument(
+        "--ant-keep-profile", action=argparse.BooleanOptionalAction, dest="ant_keep_profile",
+        default=True,
+        help="注册后保留指纹实例（同账号重登复用同一指纹）；--no-ant-keep-profile 用完即删",
+    )
+    p.add_argument(
+        "--fingerprint-region", dest="fingerprint_region",
+        default=os.environ.get("QR_FINGERPRINT_REGION") or "",
+        help="指纹地区画像（US/JP/GB…，留空=随机）；决定语言、时区与分辨率",
+    )
+    p.add_argument(
+        "--fingerprint-platform", choices=("", "windows", "macos", "linux"), dest="fingerprint_platform",
+        default=os.environ.get("QR_FINGERPRINT_PLATFORM") or "",
+        help="指纹平台画像（留空=随机）",
+    )
     p.add_argument(
         "--no-clear-tokens", action="store_true", default=_saved_flag("noClearTokens"),
         help="启动时**不要**清除 OpenAI / ChatGPT 的 cookies/localStorage。默认会清",
@@ -295,12 +416,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="页面跳转超时秒数（默认 60，DDG 慢可调到 120）",
     )
     p.add_argument(
+        "--cloudflare-timeout", type=int, default=_env_int(180, os.environ.get("QR_CLOUDFLARE_TIMEOUT")),
+        help="首页/注册页被 Cloudflare 托管挑战拦住时，等待其自动放行的秒数"
+             "（默认 180；实测这台机器+当前代理 30~115s 放行。0 = 不等，直接失败）",
+    )
+    p.add_argument(
         "--count", type=int, default=_env_int(1, LOCAL_CONFIG.get("count")),
         help="批量注册的账号数（默认 1）。manual 邮箱来源不支持 count > 1",
     )
     p.add_argument(
         "--cooldown", type=int, default=_env_int(30, LOCAL_CONFIG.get("cooldown")),
         help="批量注册时每个账号之间的冷却秒数（默认 30，避免 OpenAI 风控）",
+    )
+    p.add_argument(
+        "--browser-retry", type=int,
+        default=_env_int(1, LOCAL_CONFIG.get("browserRetry"), os.environ.get("QR_BROWSER_RETRY")),
+        help="浏览器窗口/标签页在注册中途被关闭（或崩溃）时，自动重开浏览器重试的次数"
+             "（默认 1；0 = 关闭该保护）。重试复用同一个邮箱，不重复建邮箱",
     )
     p.add_argument(
         "--stop-on-error", action="store_true", default=_saved_flag("stopOnError"),
@@ -406,7 +538,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--5sim-use-proxy", action=argparse.BooleanOptionalAction,
         default=_saved_flag("fiveSimUseProxy"),
-        help="5sim API 是否使用浏览器代理；--no-5sim-use-proxy 仅让短信 API 直连",
+        help="5sim API 是否走浏览器代理（默认直连：实测直连 0.5s/次、经代理 3s/次）；"
+             "--5sim-use-proxy 可切回代理链路",
+    )
+    p.add_argument(
+        "--5sim-providers", dest="5sim_providers",
+        default=LOCAL_CONFIG.get("fiveSimProviders", "") or "",
+        help="选定的 5sim 供应商（顺序=优先级），如 'poland/virtual66,greece/virtual34' "
+             "或短信设置里勾选后保存的 JSON；只在这些供应商里买号，失败按优先级切换下一个",
+    )
+    p.add_argument(
+        "--5sim-provider", dest="5sim_provider_flags", action="append", default=None,
+        metavar="COUNTRY/OPERATOR",
+        help="追加一个供应商（可重复；按出现顺序优先），等价于写 --5sim-providers",
+    )
+    p.add_argument(
+        "--5sim-allow-other-providers", action=argparse.BooleanOptionalAction,
+        dest="5sim_allow_other_providers",
+        default=_saved_flag("fiveSimAllowOtherProviders"),
+        help="选定的供应商全部买不到时，是否允许换到其它供应商（默认不允许）",
+    )
+    p.add_argument(
+        "--5sim-poll-interval", type=float, dest="5sim_poll_interval",
+        default=_env_float(2.0, LOCAL_CONFIG.get("fiveSimPollInterval")),
+        help="add-phone 等待 5sim 短信的轮询间隔秒数（默认 2）",
     )
     p.add_argument("--ac-check", action="store_true", help="注册/重登成功后检查当前账号 AC token")
     p.add_argument("--ac-check-batch", action="store_true", help="批量检查 MySQL 中所有账号的 token")
@@ -632,6 +787,18 @@ def _build_push_target(args: argparse.Namespace) -> "sub2api.Sub2ApiTarget":
     )
 
 
+def _5sim_selected_providers(args: argparse.Namespace) -> list:
+    """选定的 5sim 供应商（顺序=优先级）：--5sim-provider 追加项排在最前，再合并已保存列表。"""
+    from core import num5sim as num5sim_module
+
+    saved = num5sim_module.parse_providers(getattr(args, "5sim_providers", "") or "")
+    extra = num5sim_module.parse_providers(list(getattr(args, "5sim_provider_flags", None) or []))
+    if not extra:
+        return saved
+    merged = extra + [item for item in saved if item not in set(extra)]
+    return merged
+
+
 def _build_5sim_phone_verifier(args: argparse.Namespace, *, account_id: int | None = None, account_store=None):
     """如果配置了 5sim API key，返回绑定当前 MySQL 账号的 phone_verifier。"""
     api_key = getattr(args, "5sim_api_key", None) or ""
@@ -650,8 +817,11 @@ def _build_5sim_phone_verifier(args: argparse.Namespace, *, account_id: int | No
         reuse_pool=pool,
         account_id=account_id,
         account_store=account_store,
-        proxy=(args.proxy or None) if getattr(args, "5sim_use_proxy", True) else None,
-        proxy_insecure=bool(args.proxy_insecure) if getattr(args, "5sim_use_proxy", True) else False,
+        allow_other_providers=bool(getattr(args, "5sim_allow_other_providers", False)),
+        providers=_5sim_selected_providers(args),
+        poll_interval=float(getattr(args, "5sim_poll_interval", 2.0) or 2.0),
+        proxy=(args.proxy or None) if getattr(args, "5sim_use_proxy", False) else None,
+        proxy_insecure=bool(args.proxy_insecure) if getattr(args, "5sim_use_proxy", False) else False,
     )
     return verifier
 
@@ -758,6 +928,22 @@ def _batch_check_accounts(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _profile_for_attempt(args: argparse.Namespace, *, reuse_email: bool, label: str):
+    """本次注册的姓名档案；浏览器被关掉后重试时沿用上一次那份。
+
+    邮箱地址（MHJC 的姓名邮箱名）按这份档案生成，重试复用邮箱却不复用姓名，
+    就会出现「paul.lee4828@… 的账号叫 Emma Wilson」这种不一致。
+    """
+    saved = getattr(args, "_retry_profile", None)
+    if reuse_email and saved is not None:
+        first_name, last_name, birthday = saved
+        print(f"[{label}] 重试沿用上一次的姓名档案：{first_name} {last_name}")
+        return saved
+    profile = flow.random_profile()
+    args._retry_profile = profile
+    return profile
+
+
 async def _run_one_account(
     args: argparse.Namespace,
     context,
@@ -765,9 +951,17 @@ async def _run_one_account(
     out_dir: Path,
     label: str,
     nav_timeout_ms: int,
+    ant_session=None,
+    reuse_email: bool = False,
 ) -> RunResult:
-    """单个账号注册。失败抛错由调用方处理。"""
+    """单个账号注册。失败抛错由调用方处理。
+
+    ``reuse_email``：浏览器被关闭后重试时复用上一次已经建好的邮箱（MHJC 邮箱
+    只能建一次，重试再建会白烧一个地址，而且验证码本来就会发到旧邮箱）。
+    """
     page = await context.new_page()
+    watchdog = _BrowserWatchdog(label)
+    watchdog.attach(context, page)
     since_ts = time.time()
     email = ""
     try:
@@ -775,7 +969,10 @@ async def _run_one_account(
         if not args.no_clear_tokens:
             await flow.clear_openai_state(context, also_storage=True)
 
-        # 2) 决定邮箱
+        # 2) 先定下本次的姓名档案：MHJC 邮箱名会用它，保证邮箱地址与账号姓名一致
+        first_name, last_name, birthday = _profile_for_attempt(args, reuse_email=reuse_email, label=label)
+
+        # 3) 决定邮箱
         if args.email_source == "duck-api":
             email = duck_api_generate(
                 args.duck_token,
@@ -795,23 +992,35 @@ async def _run_one_account(
                     pass
             print(f"[{label}] duck email -> {email}")
         elif args.email_source == "mhjc":
-            created = mhjc.create_unique_mailbox(
-                args.mhjc_api_key,
-                base_url=args.mhjc_api_base,
-                username=args.mhjc_username,
-                ttl=args.mhjc_ttl,
-                proxy=args.proxy or None,
-                proxy_insecure=args.proxy_insecure,
-            )
-            email = created["email"]
-            args.mhjc_email = email
-            args.mhjc_password = created["password"]
-            if created.get("usernameFallback"):
-                print(
-                    f"[{label}] MHJC 用户名 {created['usernameFallback']!r} 已被占用，"
-                    f"自动改用 {created['username']}（自定义用户名只能用一次，建议留空）"
+            if reuse_email and str(getattr(args, "mhjc_email", "") or "").strip():
+                email = str(args.mhjc_email).strip()
+                print(f"[{label}] 重试复用上一次的邮箱 -> {email}（不新建，验证码仍会发到它）")
+            else:
+                created = mhjc.create_unique_mailbox(
+                    args.mhjc_api_key,
+                    base_url=args.mhjc_api_base,
+                    username=args.mhjc_username,
+                    ttl=args.mhjc_ttl,
+                    proxy=args.proxy or None,
+                    proxy_insecure=args.proxy_insecure,
+                    name_style=getattr(args, "mhjc_name_style", "name") or "name",
+                    name_first=first_name,
+                    name_last=last_name,
                 )
-            print(f"[{label}] mhjc email -> {email}（密码已加载，不打印）")
+                email = created["email"]
+                args.mhjc_email = email
+                args.mhjc_password = created["password"]
+                if created.get("usernameFallback"):
+                    print(
+                        f"[{label}] MHJC 用户名 {created['usernameFallback']!r} 已被占用，"
+                        f"自动改用 {created['username']}（自定义用户名只能用一次，建议留空）"
+                    )
+                if created.get("nameFallback") == "provider":
+                    print(
+                        f"[{label}] ⚠ 生成的姓名邮箱名连续被占用，本次回落到服务端临时前缀 {created['username']}@"
+                        f"（这类地址更容易被风控；可重跑一次或手工指定 --mhjc-username）"
+                    )
+                print(f"[{label}] mhjc email -> {email}（密码已加载，不打印）")
         elif args.email_source == "icloud":
             if args.no_persistent:
                 raise SystemExit("--email-source=icloud 需要持久化 profile 保存 iCloud 登录态，请不要使用 --no-persistent")
@@ -829,27 +1038,32 @@ async def _run_one_account(
             if not email:
                 raise SystemExit("--email-source=manual 需要 --email")
 
-        # 3) 决定密码
+        # 4) 决定密码
         if args.auth_mode == "password":
             password = args.password.strip() or generate_password()
         else:
             password = args.password.strip()
         print(f"[{label}] auth-mode={args.auth_mode}; credential omitted")
 
-        # 4) 6 步流程
+        # 5) 6 步流程
         await flow.step1_open(page)
-        await flow.step2_signup_email(page, email, allow_manual_cloudflare=not args.headless)
+        await flow.step2_signup_email(
+            page,
+            email,
+            allow_manual_cloudflare=not args.headless,
+            cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 120) or 0)),
+        )
         actual_password = await flow.step3_password(page, email, password, auth_mode=args.auth_mode)
 
         fetch_code = make_code_fetcher(args, since_ts=since_ts)
         code = await flow.step4_code(page, fetch_code)
 
-        first_name, last_name, birthday = flow.random_profile()
+        # 复用第 2 步定下的同一份姓名档案：邮箱名与账号姓名保持一致
         await flow.step5_profile(page, first_name=first_name, last_name=last_name, birthday=birthday)
 
         await flow.step6_wait_success(page)
 
-        # 5) 抓 session（带轮询，确保拿到非空 session）—— 这一步给 Plus 订阅用
+        # 6) 抓 session（带轮询，确保拿到非空 session）—— 这一步给 Plus 订阅用
         session_result = None
         try:
             session_result = await session.fetch_session(page)
@@ -876,12 +1090,17 @@ async def _run_one_account(
             mailbox_password = str(getattr(args, "mhjc_password", "") or "")
             if mailbox_password:
                 extras["emailPassword"] = mailbox_password
+        if ant_session is not None:
+            # 记住这次用的指纹实例，同一账号重登时复用同一指纹
+            extras["fingerprintProfileId"] = ant_session.profile_id
+            if ant_session.identity is not None:
+                extras.update(ant_session.identity.to_account_data())
         account_data = session.build_account_snapshot(email, session_result=session_result, extras=extras)
         store = AccountStore()
         account = store.save_account(email, actual_password, account_data)
 
         # Save first so SMS verification always has a durable MySQL account ID.
-        # 6) 跑 codex OAuth 拿完整凭据（refresh_token + id_token）— 给 SUB2API 用
+        # 7) 跑 codex OAuth 拿完整凭据（refresh_token + id_token）— 给 SUB2API 用
         # OAuth 阶段会再触发一次 OTP 邮件，需要新的 since_ts 避免拿到注册阶段那封旧邮件
         codex_creds = None
         if args.codex_oauth and not args.no_codex_oauth:
@@ -922,10 +1141,13 @@ async def _run_one_account(
         print(f"[{label}] [done] stored account id={account['id']}")
         return RunResult(email=email, status="ok", account_id=int(account["id"]))
     finally:
+        watchdog.done = True
         try:
             await page.close()
         except Exception:
             pass
+        if watchdog.events:
+            print(f"[{label}] [browser] 本次生命周期异常事件：{watchdog.summary()}")
 
 
 async def _run_one_relogin(
@@ -935,6 +1157,7 @@ async def _run_one_relogin(
     *,
     out_dir: Path,
     label: str,
+    ant_session=None,
 ) -> RunResult:
     del out_dir  # Account state is MySQL-owned; re-login writes no account JSON.
     store = AccountStore()
@@ -1024,6 +1247,12 @@ async def _run_one_relogin(
         for key, value in _account_payload(data).items():
             if key not in account_data and value is not None:
                 account_data[key] = value
+        if ant_session is not None:
+            # 记录本次实际使用的指纹实例；复用已有实例时不覆盖历史画像字段
+            account_data["fingerprintProfileId"] = ant_session.profile_id
+            if ant_session.identity is not None:
+                for key, value in ant_session.identity.to_account_data().items():
+                    account_data.setdefault(key, value)
         saved = store.save_account(email, password, account_data)
         if args.ac_check:
             try:
@@ -1062,13 +1291,180 @@ async def _run_one_relogin(
             pass
 
 
-async def _open_browser_context(args: argparse.Namespace, nav_timeout_ms: int):
+def _fingerprint_mode(args: argparse.Namespace) -> str:
+    """指纹方案：stealth（默认，纯 Playwright 指纹层）/ ant（可选，AntBrowser）/ off。
+
+    旧版本默认值是 auto，历史配置里可能还存着它 —— 直接按新的默认 stealth 处理，
+    这样即使用户升级前存过 auto，也不会再去连 AntBrowser。
+    """
+    mode = str(getattr(args, "fingerprint_browser", "stealth") or "stealth").strip().lower()
+    return "stealth" if mode == "auto" else mode
+
+
+def _ant_client(args: argparse.Namespace) -> "ant_browser.AntBrowserClient":
+    return ant_browser.AntBrowserClient(
+        base_url=getattr(args, "ant_api_base", "") or ant_browser.DEFAULT_API_BASE,
+        api_key=getattr(args, "ant_api_key", "") or "",
+    )
+
+
+def _new_identity(args: argparse.Namespace) -> "fingerprint_module.FingerprintIdentity":
+    return fingerprint_module.random_identity(
+        region=getattr(args, "fingerprint_region", "") or "",
+        platform=getattr(args, "fingerprint_platform", "") or "",
+    )
+
+
+def _stored_fingerprint_profile(args: argparse.Namespace, account_id: int) -> str:
+    """取账号上次用的指纹实例 ID（同一账号复用同一指纹）。"""
+    if _fingerprint_mode(args) == "off":
+        return ""
+    try:
+        record = AccountStore().get_account(int(account_id))
+    except Exception:
+        return ""
+    if not isinstance(record, Mapping):
+        return ""
+    return str(_account_payload(record).get("fingerprintProfileId") or "").strip()
+
+
+async def _start_fingerprint_session(args: argparse.Namespace, *, reuse_profile_id: str, name: str):
+    """启动（或复用）一个 AntBrowser 指纹实例；返回 (client, session|None)。
+
+    只有显式 --fingerprint-browser ant 才会走这里；默认的 stealth 模式完全不碰 AntBrowser。
+    """
+    if _fingerprint_mode(args) != "ant":
+        return None, None
+    client = _ant_client(args)
+    loop = asyncio.get_running_loop()
+    if not await loop.run_in_executor(None, client.health):
+        raise SystemExit(
+            f"[fingerprint] ✗ AntBrowser Launch API 无响应（{client.base_url}）；请先打开 AntBrowser，"
+            "并在「设置 → 启动服务」确认端口；或去掉 --fingerprint-browser ant 改用默认的 stealth 指纹层"
+        )
+
+    identity = _new_identity(args)
+    print(f"[fingerprint] 生成指纹：{identity.summary()}")
+    try:
+        session = await loop.run_in_executor(None, lambda: client.start_session(
+            name=name,
+            identity=identity,
+            proxy_config=ant_browser.proxy_config_for_ant(getattr(args, "proxy", "") or ""),
+            reuse_profile_id=reuse_profile_id,
+            core_id=getattr(args, "ant_core_id", "") or "",
+        ))
+    except ant_browser.AntBrowserError as error:
+        raise SystemExit(f"[fingerprint] ✗ 指纹实例启动失败：{error}") from error
+    print(f"[fingerprint] ✓ {session.summary()}")
+    return client, session
+
+
+async def _verify_fingerprint(context, identity) -> list[str]:
+    """连接后用真实页面复核指纹是否生效（内核不支持时会静默失效）。"""
+    if identity is None:
+        return []
+    page = None
+    try:
+        page = await context.new_page()
+        await page.goto("about:blank", timeout=15000)
+        runtime = await page.evaluate(fingerprint_module.FINGERPRINT_PROBE_JS)
+    except Exception as error:  # noqa: BLE001
+        return [f"指纹复核失败（{type(error).__name__}: {error}）"]
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+    issues = fingerprint_module.fingerprint_mismatches(identity, runtime)
+    if not issues:
+        print("[fingerprint] ✓ 复核通过：语言/时区/平台/核心数与画像一致")
+    return issues
+
+
+async def _probe_default_context(browser, identity) -> list[str]:
+    """在浏览器自带上下文里探测「内核是否做了原生指纹伪装」。"""
+    if identity is None or not getattr(browser, "contexts", None):
+        return []
+    page = None
+    try:
+        page = await browser.contexts[0].new_page()
+        await page.goto("about:blank", timeout=15000)
+        runtime = await page.evaluate(fingerprint_module.FINGERPRINT_PROBE_JS)
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+    return fingerprint_module.fingerprint_mismatches(identity, runtime)
+
+
+async def _open_browser_context(
+    args: argparse.Namespace,
+    nav_timeout_ms: int,
+    *,
+    fingerprint_profile: str = "",
+    fingerprint_name: str = "",
+):
+    """打开浏览器上下文；返回 (pw, browser, context, proxy_bridge, ant_session)。"""
+    mode = _fingerprint_mode(args)
+    ant_client = ant_session = None
+    if mode == "ant":
+        ant_client, ant_session = await _start_fingerprint_session(
+            args,
+            reuse_profile_id=fingerprint_profile,
+            name=fingerprint_name or f"qr-{int(time.time())}",
+        )
+    if ant_session is not None:
+        pw = await async_playwright().start()
+        try:
+            browser = await pw.chromium.connect_over_cdp(ant_session.cdp_url, timeout=30000)
+        except Exception as error:  # noqa: BLE001
+            await _stop_fingerprint_session(args, ant_session)
+            await pw.stop()
+            raise SystemExit(f"[fingerprint] ✗ CDP 接管指纹浏览器失败：{error}") from error
+        if ant_session is not None:
+            identity = ant_session.identity
+            # 先在浏览器自带上下文里探测：内核（fingerprint-chromium）是否真的做了原生伪装
+            kernel_issues = await _probe_default_context(browser, identity)
+            # 真正干活用的是「带指纹的上下文」：上下文参数 + init script 补齐一致性
+            context = await browser.new_context(**stealth.context_options_for(identity))
+            await context.add_init_script(stealth.init_script_for(identity))
+            context.set_default_navigation_timeout(nav_timeout_ms)
+            context.set_default_timeout(nav_timeout_ms)
+            issues = await _verify_fingerprint(context, identity)
+            if issues:
+                message = ("指纹未生效：" + "；".join(issues) + "。")
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                await _stop_fingerprint_session(args, ant_session)
+                await pw.stop()
+                raise SystemExit(f"[fingerprint] ✗ {message}")
+            if kernel_issues:
+                print(
+                    "[fingerprint] 提示：AntBrowser 内核未做原生指纹伪装（--fingerprint*/--timezone 被忽略），"
+                    "本次已由 CDP/JS 层补齐语言/时区/UA/平台/核心数/canvas/WebGL；"
+                    "想要内核级伪装请在「内核管理」添加 fingerprint-chromium 内核（" + ant_browser.FINGERPRINT_CORE_HINT + "）"
+                )
+            return pw, browser, context, None, ant_session
+
     pw = await async_playwright().start()
     browser_args = {
         "headless": args.headless,
         "args": ["--disable-blink-features=AutomationControlled"],
     }
-    context_args = {}
+    # 默认路径：纯 Playwright + 内置指纹层（每个账号一套画像，不依赖外部指纹浏览器）
+    identity = None if mode == "off" else _new_identity(args)
+    context_args = dict(stealth.context_options_for(identity)) if identity is not None else {}
+    if identity is not None:
+        print(f"[fingerprint] 内置指纹层：{identity.summary()}")
+    else:
+        print("[fingerprint] 指纹层已关闭（--fingerprint-browser off）")
     proxy_bridge = None
     if args.proxy_insecure:
         context_args["ignore_https_errors"] = True
@@ -1098,14 +1494,40 @@ async def _open_browser_context(args: argparse.Namespace, nav_timeout_ms: int):
             **browser_args,
         )
         browser = None
+    if identity is not None:
+        await context.add_init_script(stealth.init_script_for(identity))
     context.set_default_navigation_timeout(nav_timeout_ms)
     context.set_default_timeout(nav_timeout_ms)
-    return pw, browser, context, proxy_bridge
+    issues = await _verify_fingerprint(context, identity)
+    if issues:
+        print("[fingerprint] ⚠ 指纹未完全生效：" + "；".join(issues))
+    return pw, browser, context, proxy_bridge, None
 
 
-async def _close_browser_context(pw, browser, context, proxy_bridge=None) -> None:
+async def _stop_fingerprint_session(args: argparse.Namespace, session) -> None:
+    """关闭指纹实例窗口；--no-ant-keep-profile 时连实例配置一起删掉。"""
+    client = _ant_client(args)
+    loop = asyncio.get_running_loop()
     try:
-        if browser is not None:
+        await loop.run_in_executor(None, lambda: client.stop(session.profile_id))
+        if not getattr(args, "ant_keep_profile", True):
+            await loop.run_in_executor(None, lambda: client.delete_profile(session.profile_id))
+            print(f"[fingerprint] 已删除指纹实例 {session.profile_id}")
+    except ant_browser.AntBrowserError as error:
+        print(f"[fingerprint] ⚠ 关闭指纹实例失败：{error}")
+
+
+async def _close_browser_context(pw, browser, context, proxy_bridge=None, *,
+                                ant_session=None, args=None) -> None:
+    try:
+        if ant_session is not None:
+            try:
+                await browser.close()   # CDP 连接：只断开，不关窗口
+            except Exception:
+                pass
+            if args is not None:
+                await _stop_fingerprint_session(args, ant_session)
+        elif browser is not None:
             await context.close()
             await browser.close()
         else:
@@ -1148,56 +1570,84 @@ async def run_register(args: argparse.Namespace) -> int:
     if args.proxy and args.proxy_insecure:
         print("[init] proxy-insecure=on")
 
-    pw, browser, context, proxy_bridge = await _open_browser_context(args, nav_timeout_ms)
+    results: list[RunResult] = []
+    browser_retry = max(0, int(getattr(args, "browser_retry", 0) or 0))
     try:
-        results: list[RunResult] = []
-        try:
-            for i in range(args.count):
-                label = f"{i + 1}/{args.count}"
-                print(f"\n========== [{label}] 开始注册 ==========")
+        for i in range(args.count):
+            label = f"{i + 1}/{args.count}"
+            print(f"\n========== [{label}] 开始注册 ==========")
+            # 每个账号一个浏览器环境；窗口中途被关掉/崩溃就重开一个接着跑
+            for attempt in range(1, browser_retry + 2):
+                # 每个账号一个浏览器环境：指纹浏览器实例（不同指纹）/普通 profile
+                pw = browser = context = proxy_bridge = ant_session = None
+                # 打不开浏览器属于系统性错误：直接抛出，不降级成「单个账号失败」
+                pw, browser, context, proxy_bridge, ant_session = await _open_browser_context(
+                    args, nav_timeout_ms,
+                    fingerprint_name=f"qr-reg-{int(time.time())}-{i + 1}-{attempt}",
+                )
+                failure: Exception | None = None
+                result: RunResult | None = None
                 try:
                     result = await _run_one_account(
                         args, context,
                         out_dir=out_dir,
                         label=label,
                         nav_timeout_ms=nav_timeout_ms,
+                        ant_session=ant_session,
+                        reuse_email=attempt > 1,
                     )
-                    results.append(result)
-                    print(f"========== [{label}] ✓ 成功：{result.email} ==========")
                 except KeyboardInterrupt:
                     raise
                 except SystemExit:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    err_msg = str(e) or e.__class__.__name__
-                    print(f"========== [{label}] ✗ 失败：{err_msg} ==========")
-                    if not args.stop_on_error:
-                        # 把 trace 落到日志便于排查，但继续下一个
-                        traceback.print_exc()
-                    results.append(RunResult(email="?", status="fail", error=err_msg))
-                    if args.stop_on_error:
-                        raise
+                    failure = e
+                finally:
+                    await _close_browser_context(
+                        pw, browser, context, proxy_bridge,
+                        ant_session=ant_session, args=args,
+                    )
 
-                # 冷却（最后一个之后不用等）
-                if i < args.count - 1 and args.cooldown > 0:
-                    print(f"... 冷却 {args.cooldown}s 再开始下一个 ...")
-                    await asyncio.sleep(args.cooldown)
-        finally:
-            pass
+                if failure is None and result is not None:
+                    results.append(result)
+                    print(f"========== [{label}] ✓ 成功：{result.email} ==========")
+                    break
 
-        # ===== 汇总 =====
-        ok = [r for r in results if r.status == "ok"]
-        fail = [r for r in results if r.status == "fail"]
-        print()
-        print(f"========== 批量结束：成功 {len(ok)} / 失败 {len(fail)} / 总计 {len(results)} ==========")
-        for r in ok:
-            print(f"  ✓ {r.email}  ->  {r.filename}")
-        for r in fail:
-            print(f"  ✗ {r.email}  失败：{r.error}")
+                err_msg = str(failure) or failure.__class__.__name__
+                if _is_browser_gone(failure) and attempt <= browser_retry:
+                    print(
+                        f"[browser] ⚠ 浏览器/标签页在注册过程中被关闭或崩溃（{err_msg}）；"
+                        f"自动重开浏览器重试 {attempt}/{browser_retry}"
+                        f"（复用同一个邮箱；要关掉这个保护用 --browser-retry 0）"
+                    )
+                    continue
+                print(f"========== [{label}] ✗ 失败：{err_msg} ==========")
+                if not args.stop_on_error:
+                    # 把 trace 落到日志便于排查，但继续下一个
+                    traceback.print_exception(type(failure), failure, failure.__traceback__)
+                results.append(RunResult(email="?", status="fail", error=err_msg))
+                if args.stop_on_error:
+                    raise failure
+                break
 
-        return 0 if not fail or not args.stop_on_error else 1
+            # 冷却（最后一个之后不用等）
+            if i < args.count - 1 and args.cooldown > 0:
+                print(f"... 冷却 {args.cooldown}s 再开始下一个 ...")
+                await asyncio.sleep(args.cooldown)
     finally:
-        await _close_browser_context(pw, browser, context, proxy_bridge)
+        pass
+
+    # ===== 汇总 =====
+    ok = [r for r in results if r.status == "ok"]
+    fail = [r for r in results if r.status == "fail"]
+    print()
+    print(f"========== 批量结束：成功 {len(ok)} / 失败 {len(fail)} / 总计 {len(results)} ==========")
+    for r in ok:
+        print(f"  ✓ {r.email}  ->  {r.filename}")
+    for r in fail:
+        print(f"  ✗ {r.email}  失败：{r.error}")
+
+    return 0 if not fail or not args.stop_on_error else 1
 
 
 async def run_relogin(args: argparse.Namespace) -> int:
@@ -1219,7 +1669,6 @@ async def run_relogin(args: argparse.Namespace) -> int:
     if args.proxy and args.proxy_insecure:
         print("[init] proxy-insecure=on")
 
-    pw, browser, context, proxy_bridge = await _open_browser_context(args, nav_timeout_ms)
     results: list[RunResult] = []
     try:
         for i, target in enumerate(targets):
@@ -1227,8 +1676,16 @@ async def run_relogin(args: argparse.Namespace) -> int:
             account_email = str(target.get("email") or "")
             label = f"{i + 1}/{len(targets)}"
             print(f"\n========== [{label}] 开始重登 {account_email or f'id={account_id}'} ==========")
+            # 每个账号一个浏览器环境：优先复用该账号上次的指纹实例
+            pw = browser = context = proxy_bridge = ant_session = None
+            pw, browser, context, proxy_bridge, ant_session = await _open_browser_context(
+                args, nav_timeout_ms,
+                fingerprint_profile=_stored_fingerprint_profile(args, account_id),
+                fingerprint_name=f"qr-acct-{account_id}",
+            )
             try:
-                result = await _run_one_relogin(args, context, account_id, out_dir=out_dir, label=label)
+                result = await _run_one_relogin(args, context, account_id, out_dir=out_dir, label=label,
+                                                ant_session=ant_session)
                 results.append(result)
                 print(f"========== [{label}] ✓ 重登成功：{result.email} ==========")
             except KeyboardInterrupt:
@@ -1243,12 +1700,17 @@ async def run_relogin(args: argparse.Namespace) -> int:
                 results.append(RunResult(email=account_email, status="fail", account_id=account_id, error=err_msg))
                 if args.stop_on_error:
                     raise
+            finally:
+                await _close_browser_context(
+                    pw, browser, context, proxy_bridge,
+                    ant_session=ant_session, args=args,
+                )
 
             if i < len(targets) - 1 and args.cooldown > 0:
                 print(f"... 冷却 {args.cooldown}s 再重登下一个 ...")
                 await asyncio.sleep(args.cooldown)
     finally:
-        await _close_browser_context(pw, browser, context, proxy_bridge)
+        pass
 
     ok = [r for r in results if r.status == "ok"]
     fail = [r for r in results if r.status == "fail"]
@@ -1272,6 +1734,7 @@ async def _run_one_codex_push(
     account_id: int,
     *,
     label: str,
+    ant_session=None,
 ) -> dict[str, Any]:
     """Freshly log in one selected account, save new credentials, then push it.
 
@@ -1378,6 +1841,8 @@ async def _run_one_codex_push(
         for key, value in _account_payload(data).items():
             if key not in account_data and value is not None:
                 account_data[key] = value
+        if ant_session is not None:
+            account_data["fingerprintProfileId"] = ant_session.profile_id
         # Persist the fresh credentials BEFORE the remote create: a push failure
         # must leave usable credentials behind instead of losing them.
         store.save_account(email, password, account_data)
@@ -1456,19 +1921,32 @@ async def run_codex_push(args: argparse.Namespace) -> int:
     print(f"[init] code-source={args.code_source}")
     print(f"[init] {_proxy_banner(args)}")
 
-    pw, browser, context, proxy_bridge = await _open_browser_context(args, nav_timeout_ms)
     results: list[dict[str, Any]] = []
     try:
         for i, target in enumerate(targets):
             account_id = int(target["id"])
             label = f"{i + 1}/{len(targets)}"
             print(f"\n========== [{label}] Codex 登录并推送 {target.get('email') or f'id={account_id}'} ==========")
-            results.append(await _run_one_codex_push(args, context, account_id, label=label))
+            # 每个账号一个浏览器环境：优先复用该账号注册时用的指纹实例
+            pw = browser = context = proxy_bridge = ant_session = None
+            pw, browser, context, proxy_bridge, ant_session = await _open_browser_context(
+                args, nav_timeout_ms,
+                fingerprint_profile=_stored_fingerprint_profile(args, account_id),
+                fingerprint_name=f"qr-acct-{account_id}",
+            )
+            try:
+                results.append(await _run_one_codex_push(args, context, account_id, label=label,
+                                                        ant_session=ant_session))
+            finally:
+                await _close_browser_context(
+                    pw, browser, context, proxy_bridge,
+                    ant_session=ant_session, args=args,
+                )
             if i < len(targets) - 1 and args.cooldown > 0:
                 print(f"... 冷却 {args.cooldown}s 再处理下一个 ...")
                 await asyncio.sleep(args.cooldown)
     finally:
-        await _close_browser_context(pw, browser, context, proxy_bridge)
+        pass
 
     ok = [r for r in results if r["pushed"]]
     fail = [r for r in results if not r["pushed"]]

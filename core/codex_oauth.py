@@ -27,7 +27,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
 from core.http_utils import open_url
 
@@ -700,6 +700,40 @@ PHONE_CODE_INPUT = (
     "input[inputmode='numeric']"
 )
 
+# add-phone 页的「验证码接收方式」：Text message(SMS) / WhatsApp。
+# 真实页面是 React Aria 的 segmented-control，radio 的 value 与语言无关：
+#   <label data-state="on|off"><input type="radio" value="sms|whatsapp" …>…<span>Mensaje de texto</span></label>
+# 页面语言会变（英文 Text message / 西语 Mensaje de texto / 中文 短信…），
+# 所以先按 value 匹配，再退回多语言文案。
+SMS_CHANNEL_RADIO = "input[type='radio']"
+SMS_CHANNEL_VALUES = ("sms", "text", "textmessage", "text_message", "text-message", "message")
+WHATSAPP_CHANNEL_VALUES = ("whatsapp", "whats_app", "whats-app")
+SMS_CHANNEL_TEXTS = (
+    "text message", "textmessage", "sms", "mensaje de texto", "mensaje de sms",
+    "sms 短信", "短信", "文字短信", "文字信息", "文本消息", "短信验证码",
+    "message texte", "textnachricht", "mensagem de texto", "mensaje de texto",
+)
+WHATSAPP_CHANNEL_TEXTS = ("whatsapp", "whats app")
+
+# 「验证码已发到 WhatsApp」这类交付提示（多语言）：必须同时出现「发送/验证码」与 WhatsApp，
+# 否则 add-phone 页把 WhatsApp 列成选项这件事本身就会被误判成异常。
+_WHATSAPP_DELIVERY_RE = re.compile(
+    r"(whatsapp[^.\n]{0,80}(code|c[oó]digo|verificaci[oó]n|verification|验证码|验证))"
+    r"|((sent|send|enviad[oa]s?|enviamos|hemos enviado|已发送|发送)"
+    r"[^.\n]{0,80}whatsapp)",
+    re.IGNORECASE,
+)
+
+_WHATSAPP_SMS_FAILURE_RE = re.compile(
+    r"(?:couldn['\u2019]t|could not|can['\u2019]t|cannot|unable to)\s+send\s+"
+    r"(?:a\s+|the\s+)?(?:text message|sms)\b[\s\S]{0,200}?\bwhatsapp\b",
+    re.IGNORECASE,
+)
+
+
+class _FiveSimSmsDeliveryError(RuntimeError):
+    """The page explicitly rejected SMS delivery for this number."""
+
 
 # ---------------------------------------------------------------------------
 # 国家 / E.164 国际区号映射
@@ -1015,6 +1049,127 @@ async def _verify_selected_country(page, dial_code: str) -> bool:
     return False
 
 
+async def _select_sms_channel(page, *, wait_ms: int = 1500) -> str:
+    """确保 add-phone 页的验证码接收方式是「短信 / Text message」，而不是 WhatsApp。
+
+    返回：
+      "sms"    —— 已确认为短信方式
+      "absent" —— 页面没有短信/WhatsApp 选择器（旧版页面 / 非标准页面），按默认继续
+      "failed" —— 有 WhatsApp 选项但切不到短信（此时绝不能提交：码会发到 WhatsApp，5sim 永远收不到）
+
+    真实页面的 radio value 与语言无关（sms / whatsapp），优先按 value 匹配；
+    文案匹配只是给非标准变体兜底（页面语言可能是中文、西语、法语…）。
+    """
+    async def _probe():
+        """返回 (radio 信息列表, 页面是否支持这套定位)。定位机制本身不可用时立刻放弃，不空等。"""
+        try:
+            radios = page.locator(SMS_CHANNEL_RADIO)
+            count = int(await radios.count())
+        except Exception:
+            return [], False
+        found = []
+        for index in range(max(0, min(count, 12))):
+            try:
+                radio = radios.nth(index)
+                value = str(await radio.get_attribute("value") or "").strip().lower()
+                checked = bool(await radio.is_checked())
+                text = ""
+                container = radio.locator("xpath=ancestor::label[1]")
+                if await container.count():
+                    text = str(await container.inner_text() or "")
+            except Exception:
+                continue
+            found.append({"index": index, "value": value,
+                          "text": text.strip().lower(), "checked": checked})
+        return found, True
+
+    def _is_sms(item) -> bool:
+        value, text = item["value"], item["text"]
+        if any(token in value for token in WHATSAPP_CHANNEL_VALUES) or "whatsapp" in text:
+            return False
+        if value and any(token in value for token in SMS_CHANNEL_VALUES):
+            return True
+        return any(token in text for token in SMS_CHANNEL_TEXTS)
+
+    def _is_whatsapp(item) -> bool:
+        value, text = item["value"], item["text"]
+        return (any(token in value for token in WHATSAPP_CHANNEL_VALUES)
+                or any(token in text for token in WHATSAPP_CHANNEL_TEXTS))
+
+    # 选择器可能在本步之后才渲染（React 挂载 / 号码填完才出现），短暂等一等再看
+    deadline = asyncio.get_running_loop().time() + max(0, wait_ms) / 1000.0
+    items: list = []
+    while True:
+        items, supported = await _probe()
+        if not supported:
+            # 页面根本不支持这套定位（测试替身 / 完全不同的页面结构）：按「没有该控件」处理，不空等
+            return "absent"
+        if any(_is_sms(item) or _is_whatsapp(item) for item in items):
+            break
+        if asyncio.get_running_loop().time() >= deadline:
+            break
+        await asyncio.sleep(0.25)
+
+    sms_items = [item for item in items if _is_sms(item)]
+    whatsapp_items = [item for item in items if _is_whatsapp(item)]
+    if not sms_items and not whatsapp_items:
+        return "absent"
+
+    chosen = sms_items[0] if sms_items else None
+    if chosen is not None and chosen["checked"] and not any(item["checked"] for item in whatsapp_items):
+        return "sms"
+    if chosen is None:
+        return "failed"
+
+    radio = page.locator(SMS_CHANNEL_RADIO).nth(chosen["index"])
+    # 1) 点 label（React Aria 的 label 点击会驱动状态，UI 上也有反馈）
+    try:
+        container = radio.locator("xpath=ancestor::label[1]")
+        target = container if await container.count() else radio
+        await _click_with_force_fallback(target, timeout_ms=4000)
+    except Exception:
+        pass
+    if await _channel_is_sms(page, chosen["index"]):
+        return "sms"
+
+    # 2) 直接点 radio + 派发 input/change，覆盖「label 点击没生效」的实现
+    try:
+        await radio.evaluate(
+            "el => { el.click(); el.dispatchEvent(new Event('input', {bubbles:true})); "
+            "el.dispatchEvent(new Event('change', {bubbles:true})); }"
+        )
+    except Exception:
+        pass
+    if await _channel_is_sms(page, chosen["index"]):
+        return "sms"
+
+    # 3) 最后一招：聚焦 + 空格（React Aria 的 segmented control 通常响应键盘）
+    try:
+        await radio.focus()
+        await page.keyboard.press("Space")
+    except Exception:
+        pass
+    await asyncio.sleep(0.3)
+    return "sms" if await _channel_is_sms(page, chosen["index"]) else "failed"
+
+
+async def _channel_is_sms(page, index: int) -> bool:
+    """复核第 index 个 radio 现在确实处于选中态（radio.checked 或 label[data-state=on]）。"""
+    try:
+        radio = page.locator(SMS_CHANNEL_RADIO).nth(index)
+        if not await radio.count():
+            return False
+        if await radio.is_checked():
+            return True
+        state = await radio.evaluate(
+            "el => { const l = el.closest('label');"
+            " return (l && l.getAttribute('data-state')) || el.getAttribute('aria-checked') || ''; }"
+        )
+        return str(state or "").strip().lower() in {"on", "checked", "true", "selected"}
+    except Exception:
+        return False
+
+
 async def _select_phone_country(page, country: str, phone: str) -> bool:
     """在 add-phone 页选中与号码实际区号一致的国家。
 
@@ -1084,7 +1239,9 @@ def create_5sim_phone_verifier(
     account_store=None,
     max_accounts_per_phone: int = 3,
     max_buy_attempts: int = 3,
-    poll_interval: float = 5.0,
+    allow_other_providers: bool = False,
+    providers: "Sequence[tuple[str, str]] | str | None" = None,
+    poll_interval: float = 2.0,
     poll_timeout: float = 120.0,
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
@@ -1092,21 +1249,27 @@ def create_5sim_phone_verifier(
     """创建一个 phone_verifier callable，用 5sim 自动完成 OpenAI add-phone 流程。
 
     流程：
-    1. 优先从复用池中查找可复用号码，调用 5sim reuse API
+    1. 优先沿用复用池中仍有效的原订单；订单失效后才尝试 5sim reuse API
     2. 无可用号码时，新购一个（带 reuse=1 参数优先服务器端复用）
     3. 填写 OpenAI add-phone 表单（国家选择 + 号码）
     4. 轮询 SMS → 填入验证码
     5. add-phone 页面接受 OTP 后把手机号原子绑定到当前 MySQL 账号；复用池仅存订单元数据
 
+    providers：短信设置里勾选的供应商列表，**顺序即优先级**；只在其中选号、
+    某个供应商买不到就在下一个优先级上重试。留空则退回 country/operator 的旧行为。
+
     用法：
         pool = num5sim.ActivationPool.load()
-        verifier = create_5sim_phone_verifier(api_key="...", country="vietnam", reuse_pool=pool)
+        verifier = create_5sim_phone_verifier(api_key="...", providers=[("poland", "virtual66")], reuse_pool=pool)
         creds = await run_codex_oauth(page, ..., phone_verifier=verifier)
         pool.save()
     """
     from core import num5sim
 
     buy_limit = max(1, int(max_buy_attempts))
+    # 选定供应商（按优先级）；空列表 = 用 country/operator 的旧行为
+    selected: list[tuple[str, str]] = num5sim.parse_providers(providers)
+    selected_set = set(selected)
 
     async def run_5sim(call_factory, *, action: str, retry_direct: bool = True):
         loop = asyncio.get_running_loop()
@@ -1124,7 +1287,7 @@ def create_5sim_phone_verifier(
             raise
 
     @asynccontextmanager
-    async def selected_order():
+    async def selected_order(excluded_phones, acquisition, banned_phones):
         if account_id is None or account_store is None:
             raise RuntimeError("自动 5sim 接码需要 MySQL 账号绑定上下文")
         current = await asyncio.get_running_loop().run_in_executor(None, account_store.get_account, int(account_id))
@@ -1133,8 +1296,6 @@ def create_5sim_phone_verifier(
         if current.get("codexPhoneNumber"):
             raise RuntimeError("该账号已有手机号绑定；请核对账号，不重复分配临时号码")
         loop = asyncio.get_running_loop()
-        excluded_phones: set[str] = set()
-        buy_attempts = 0
         print(f"[codex-oauth] add-phone: 开始 5sim 自动接码  proxy={'set' if proxy else 'NOT SET'}  proxy_insecure={proxy_insecure}")
 
         async def reserve(phone):
@@ -1156,14 +1317,20 @@ def create_5sim_phone_verifier(
 
         # ── 1) 优先复用MySQL尚未达到账号上限的号码 ──
         async def buy_fresh_number() -> Any:
-            nonlocal buy_attempts
+            # 选定供应商时，购买上限至少覆盖整个优先级列表，否则后面的优先级永远轮不到
+            effective_limit = max(buy_limit, len(selected) or 1)
 
-            async def attempt_buy(country_value: str, operator_value: str):
-                nonlocal buy_attempts
-                if buy_attempts >= buy_limit:
-                    raise RuntimeError(f"已达到每次手机号验证最多购买 {buy_limit} 个 5sim 订单的安全上限")
+            async def attempt_buy(country_value: str, operator_value: str, *, label: str = ""):
+                buy_attempts = acquisition["buy_attempts"]
+                if buy_attempts >= effective_limit:
+                    raise RuntimeError(
+                        f"已达到本次手机号验证最多购买 {effective_limit} 个 5sim 订单的安全上限"
+                    )
                 buy_attempts += 1
-                print(f"[codex-oauth] add-phone: 购买号码 country={country_value} operator={operator_value} product={product} attempt={buy_attempts}/{buy_limit}")
+                acquisition["buy_attempts"] = buy_attempts
+                suffix = f"（{label}）" if label else ""
+                print(f"[codex-oauth] add-phone: 购买号码 country={country_value} operator={operator_value} "
+                      f"product={product} attempt={buy_attempts}/{effective_limit}{suffix}")
                 return await run_5sim(
                     lambda call_proxy, call_proxy_insecure: num5sim.buy_activation(
                         api_key=api_key, country=country_value, operator=operator_value,
@@ -1174,18 +1341,96 @@ def create_5sim_phone_verifier(
                     retry_direct=False,
                 )
 
-            try:
-                return await attempt_buy(country, operator)
-            except num5sim.FiveSimNoFreePhonesError as buy_error:
-                candidates = await run_5sim(
+            async def other_provider_candidates() -> "list":
+                return await run_5sim(
                     lambda call_proxy, call_proxy_insecure: num5sim.find_buy_candidates(
                         product=product, country=country, operator=operator,
                         max_price=max_price, proxy=call_proxy,
                         proxy_insecure=call_proxy_insecure, limit=max(1, candidate_limit),
                         priority=acquire_priority,
+                        strict_provider=not allow_other_providers,
                     ),
                     action="5sim 查询候选库存",
                 )
+
+            async def buy_by_priority():
+                """按短信设置里勾选的供应商顺序买；某个买不到就切下一个优先级。"""
+                plan: list[tuple[str, str, str]] = [(c, o, "已选") for c, o in selected]
+                if allow_other_providers:
+                    try:
+                        extra = await other_provider_candidates()
+                    except RuntimeError:
+                        extra = []
+                    known = {(c, o) for c, o, _ in plan}
+                    plan += [(e.country, e.operator, "备选") for e in extra
+                             if (e.country, e.operator) not in known]
+                if not plan:
+                    raise RuntimeError("没有可用的 5sim 供应商（选定列表为空）")
+
+                # 一次库存快照：明显没号的就别浪费一次买号请求（全都没号时仍按优先级实试）
+                skipped: list[str] = []
+                try:
+                    counts = await run_5sim(
+                        lambda call_proxy, call_proxy_insecure: num5sim.stock_counts(
+                            product=product, proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                        ),
+                        action="5sim 查询库存快照",
+                    )
+                except RuntimeError:
+                    counts = {}
+                if counts:
+                    with_stock = [row for row in plan if counts.get((row[0], row[1]), 0) > 0]
+                    if with_stock:
+                        skipped = [num5sim.format_provider((c, o)) for c, o, _ in plan
+                                   if counts.get((c, o), 0) <= 0]
+                        for name in skipped:
+                            print(f"[codex-oauth] add-phone: 快照显示 {name} 无库存，按优先级跳过")
+                        plan = with_stock
+
+                last_error = None
+                total = len(plan)
+                for index, (country_value, operator_value, source) in enumerate(plan, start=1):
+                    print(f"[codex-oauth] add-phone: 按优先级 {index}/{total} 购买 "
+                          f"{country_value}/{operator_value}（{source}）")
+                    try:
+                        return await attempt_buy(
+                            country_value, operator_value,
+                            label=f"优先级 {index}/{total} {source}",
+                        )
+                    except num5sim.FiveSimNoFreePhonesError as error:
+                        last_error = error
+                        print(f"[codex-oauth] add-phone: ✗ {country_value}/{operator_value} 无号，"
+                              f"切下一个优先级")
+                        continue
+                detail = "、".join(num5sim.format_provider((c, o)) for c, o, _ in plan)
+                hint = ("；快照显示无库存而跳过：" + "、".join(skipped)) if skipped else ""
+                raise RuntimeError(
+                    f"选定的 {total} 个供应商按优先级全部购买失败（{detail}）{hint}。"
+                    "可在短信设置里调整优先级顺序，或勾选「列表用尽后允许换其它供应商」"
+                ) from last_error
+
+            if selected:
+                return await buy_by_priority()
+
+            preferred = _preferred_provider()
+            if preferred and (country in ("", "any") and operator in ("", "any")):
+                # 号码池里有本产品最近买成功的供应商：直接先试它，省掉一次 all/any 空跑
+                print(f"[codex-oauth] add-phone: 先用上次成功的供应商 "
+                      f"{preferred[0]}/{preferred[1]}")
+                try:
+                    return await attempt_buy(preferred[0], preferred[1])
+                except num5sim.FiveSimNoFreePhonesError:
+                    pass
+            try:
+                return await attempt_buy(country, operator)
+            except num5sim.FiveSimNoFreePhonesError as buy_error:
+                candidates = await other_provider_candidates()
+                if not candidates:
+                    raise RuntimeError(
+                        f"你选择的供应商（country={country} operator={operator}）当前没有可用号码；"
+                        "未切换到其它供应商。可在短信设置里勾选供应商，"
+                        "或勾选「列表用尽后允许换其它供应商」"
+                    ) from buy_error
                 for candidate in candidates:
                     try:
                         return await attempt_buy(candidate.country, candidate.operator)
@@ -1193,27 +1438,70 @@ def create_5sim_phone_verifier(
                         continue
                 raise RuntimeError("5sim 无可用号码或已达到候选购买上限") from buy_error
 
+        def _preferred_provider() -> "tuple[str, str] | None":
+            """号码池里本产品最近一次成功购买的 country/operator（限定在选定列表内）。"""
+            if reuse_pool is None:
+                return None
+            best = None
+            for entry in getattr(reuse_pool, "entries", []) or []:
+                if getattr(entry, "product", "") != product:
+                    continue
+                if not (entry.country and entry.operator):
+                    continue
+                if selected_set and num5sim.provider_key(entry.country, entry.operator) not in selected_set:
+                    continue
+                if best is None or entry.last_used_at > best.last_used_at:
+                    best = entry
+            if best is None:
+                return None
+            return (best.country, best.operator)
+
         # ── 1b) 新购号码时也以同一有界函数获取号码 ──
         order = None
         slot = None
         bind = None
-        # The reuse endpoint has no price ceiling; use capped purchases when configured.
-        if reuse_pool is not None and max_price is None:
+        # 活跃原订单已经付费，继续接码不会触发重新购买。
+        if reuse_pool is not None and not banned_phones:
             while True:
                 reusable = reuse_pool.find_usable(
-                    country=country if country != "any" else "",
-                    operator=operator if operator != "any" else "",
+                    country=country if not selected and country != "any" else "",
+                    operator=operator if not selected and operator != "any" else "",
                     product=product,
                     exclude_phones=excluded_phones,
                 )
                 if not reusable:
                     break
+                if selected_set and num5sim.provider_key(reusable.country, reusable.operator) not in selected_set:
+                    # 池里的号码不在选定供应商列表里：跳过（用户只允许在勾选的供应商里选号）
+                    print(f"[codex-oauth] add-phone: 池中号码 ****{reusable.phone[-4:]} 属于 "
+                          f"{reusable.country}/{reusable.operator}，不在选定供应商内，跳过")
+                    excluded_phones.add(reusable.phone)
+                    continue
                 slot, bind = await reserve(reusable.phone)
                 if slot is None:
                     excluded_phones.add(reusable.phone)
                     continue
                 print(f"[codex-oauth] add-phone: 尝试复用号码 ****{reusable.phone[-4:]}")
                 try:
+                    if reusable.last_order_id:
+                        try:
+                            existing_order = await run_5sim(
+                                lambda call_proxy, call_proxy_insecure: num5sim.check_order(
+                                    api_key=api_key, order_id=reusable.last_order_id,
+                                    proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                                ), action="5sim 查询原订单",
+                            )
+                        except num5sim.FiveSimOrderUnavailableError:
+                            existing_order = None
+                        if existing_order is not None:
+                            if (existing_order.id != reusable.last_order_id
+                                    or existing_order.phone != reusable.phone
+                                    or existing_order.product != product):
+                                raise RuntimeError("5sim 原订单与池中号码不一致；当前账号跳过")
+                            if existing_order.active:
+                                order = existing_order
+                                print(f"[codex-oauth] add-phone: 沿用未完结订单 {order.id}，等待本账号的新短信")
+                                break
                     order = await run_5sim(
                         lambda call_proxy, call_proxy_insecure: num5sim.reuse_number(
                             api_key=api_key, phone=reusable.phone, product=product,
@@ -1224,6 +1512,31 @@ def create_5sim_phone_verifier(
                     )
                     if order.phone != reusable.phone:
                         raise RuntimeError("5sim 复用返回了不同号码；当前账号跳过")
+                    if max_price is not None and order.price and order.price > max_price:
+                        print(
+                            f"[codex-oauth] add-phone: 复用 ****{order.phone[-4:]} 报价 "
+                            f"{order.price:.4f} 超过价格上限 {max_price:.4f}，取消并改走限量新购"
+                        )
+                        try:
+                            await run_5sim(
+                                lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
+                                    api_key=api_key, order_id=order.id,
+                                    proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                                ),
+                                action="5sim 取消超价复用订单",
+                                retry_direct=False,
+                            )
+                        except Exception as cancel_error:  # noqa: BLE001
+                            print(f"[codex-oauth] add-phone: 取消超价复用订单失败：{cancel_error}")
+                        raise num5sim.FiveSimNoFreePhonesError(
+                            f"复用报价 {order.price:.4f} 超过上限 {max_price:.4f}"
+                        )
+                    if max_price is None:
+                        print(f"[codex-oauth] add-phone: 复用成功（未设价格上限，报价 {order.price or '未知'}）")
+                    elif not order.price:
+                        print(f"[codex-oauth] add-phone: 复用成功（5sim 未回报价，上限 {max_price:.4f} 不拦截）")
+                    else:
+                        print(f"[codex-oauth] add-phone: 复用成功（报价 {order.price:.4f} ≤ 上限 {max_price:.4f}）")
                     break
                 except BaseException as error:
                     await loop.run_in_executor(None, slot.__exit__, None, None, None)
@@ -1236,10 +1549,10 @@ def create_5sim_phone_verifier(
         # ── 2) 无可复用号码则新购 ──
         while order is None:
             order = await buy_fresh_number()
-            slot, bind = await reserve(order.phone)
+            slot, bind = (None, None) if order.phone in banned_phones else await reserve(order.phone)
             if slot is None:
                 excluded_phones.add(order.phone)
-                print(f"[codex-oauth] add-phone: 号码 ****{order.phone[-4:]} 已满额，取消订单并换号")
+                print(f"[codex-oauth] add-phone: 号码 ****{order.phone[-4:]} 已排除或满额，取消订单并换号")
                 await run_5sim(
                     lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
                         api_key=api_key, order_id=order.id, proxy=call_proxy,
@@ -1253,11 +1566,20 @@ def create_5sim_phone_verifier(
         finally:
             await loop.run_in_executor(None, slot.__exit__, None, None, None)
 
+    async def reject_sms_unavailable(page):
+        try:
+            page_text = str(await _auth_page_text(page) or "")
+        except Exception:
+            return
+        if _WHATSAPP_SMS_FAILURE_RE.search(page_text):
+            raise _FiveSimSmsDeliveryError("页面无法向此号码发送短信，已自动切换到 WhatsApp")
+
     async def submit_order(page, order, bind_verified_phone):
         loop = asyncio.get_running_loop()
 
         phone = order.phone
         order_id = order.id
+        previous_sms = list(order.sms or [])
         print(f"[codex-oauth] add-phone: 已取得号码 ****{phone[-4:]} 订单={order_id}")
 
         # ── 3) 填写 add-phone 表单 ──
@@ -1329,7 +1651,31 @@ def create_5sim_phone_verifier(
         except Exception:
             pass
 
-        # 3d) 点击提交按钮
+        # 3d) 验证码接收方式必须是「短信 / Text message」：
+        #     页面（西语/英文区）默认可能勾的就是 WhatsApp，那样 5sim 号码永远收不到码，
+        #     旧实现会白等 120 秒再超时。这里先切到短信；切不过去就地失败，不浪费号码与等待时间。
+        channel = await _select_sms_channel(page)
+        if channel == "failed":
+            await _save_debug(page, "codex-oauth-add-phone-channel-not-sms")
+            raise RuntimeError(
+                "add-phone 页的验证码接收方式不是短信（当前可能勾的就是 WhatsApp），已停止提交："
+                "WhatsApp 收不到 5sim 的验证码。请在页面上确认接收方式，或反馈该页面结构变化"
+            )
+        if channel == "sms":
+            print("[codex-oauth] add-phone: 验证码接收方式 = 短信 / Text message")
+        else:
+            print("[codex-oauth] add-phone: 页面未出现短信/WhatsApp 选择器，按默认方式继续")
+
+        # 切换接收方式可能触发 React 重渲染，确认号码还在（不在就补填，避免提交空号）
+        try:
+            tel_after = await _read_locator_value(page.locator(PHONE_INPUT_TEL).first)
+            if _digits(tel_after) != phone_national:
+                await page.locator(PHONE_INPUT_TEL).first.fill(phone_national)
+                print("[codex-oauth] add-phone: 选择接收方式后号码框被重置，已重新填写")
+        except Exception:
+            pass
+
+        # 3e) 点击提交按钮
         clicked = False
         for sel in [PHONE_SUBMIT_BUTTON,
                      "button[type='submit']",
@@ -1350,11 +1696,36 @@ def create_5sim_phone_verifier(
             await _save_debug(page, "codex-oauth-add-phone-no-submit")
             raise RuntimeError("找不到「发送验证码」按钮")
 
+        await reject_sms_unavailable(page)
+        # 提交后再复核一次：有的变体提交后才渲染接收方式（若此时被改成 WhatsApp，立刻停）
+        post_channel = await _select_sms_channel(page, wait_ms=1200)
+        await reject_sms_unavailable(page)
+        if post_channel == "failed":
+            await _save_debug(page, "codex-oauth-add-phone-channel-not-sms-after-submit")
+            raise RuntimeError(
+                "提交后页面把验证码接收方式切成了 WhatsApp，5sim 收不到码；已停止等待并取消订单"
+            )
+        if post_channel == "sms":
+            print("[codex-oauth] add-phone: 提交后复核：接收方式仍是短信")
+
+        # 提交后若页面文案明确说「验证码已发到 WhatsApp」，立刻点明原因，
+        # 免得把「码发去了 WhatsApp」误判成 5sim 没发码。
+        # 必须匹配「发送 + WhatsApp」的语义：add-phone 页本身就把 WhatsApp 列成选项，
+        # 只按关键词判定会把每个正常页面都报成异常。
+        try:
+            page_text = str(await _auth_page_text(page) or "")
+            if _WHATSAPP_DELIVERY_RE.search(page_text):
+                print("[codex-oauth] add-phone: ⚠ 页面提示验证码发到了 WhatsApp，而不是短信")
+                await _save_debug(page, "codex-oauth-add-phone-whatsapp-hint")
+        except Exception:
+            pass
+
         # ── 4) 轮询等待 SMS ──
         print(f"[codex-oauth] add-phone: 等待 5sim SMS（最多 {poll_timeout}s）...")
         deadline = loop.time() + poll_timeout
         sms_code = None
         while loop.time() < deadline:
+            await reject_sms_unavailable(page)
             try:
                 order = await run_5sim(
                     lambda call_proxy, call_proxy_insecure: num5sim.check_order(
@@ -1370,7 +1741,9 @@ def create_5sim_phone_verifier(
                 await asyncio.sleep(poll_interval)
                 continue
 
-            sms_code = order.code
+            if not order.active:
+                raise RuntimeError(f"5sim 订单 {order_id} 已结束或过期（{order.status}），停止等待短信")
+            sms_code = order.code_since(previous_sms)
             if sms_code:
                 print("[codex-oauth] add-phone: 收到短信验证码")
                 break
@@ -1394,6 +1767,7 @@ def create_5sim_phone_verifier(
             raise RuntimeError(f"5sim 等待 SMS 超时（{poll_timeout}s），订单 {order_id} 已取消")
 
         # ── 5) 填写 OTP ──
+        await reject_sms_unavailable(page)
         if not await _fill_otp_code(page, sms_code):
             raise RuntimeError("填写手机验证码 OTP 失败")
 
@@ -1413,14 +1787,15 @@ def create_5sim_phone_verifier(
             await asyncio.sleep(0.5)
         if not accepted:
             raise RuntimeError("手机验证码提交后页面未离开验证步骤；号码未绑定")
+        pending_cancellation = False
         try:
             binding = loop.run_in_executor(None, bind_verified_phone)
             try:
                 claim = await asyncio.shield(binding)
             except asyncio.CancelledError:
-                # Finish the durable write before the reservation connection closes.
-                await binding
-                raise
+                # Save the retained order after the durable write before releasing its lock.
+                claim = await binding
+                pending_cancellation = True
         except Exception as bind_error:
             # OTP 可能已生效； never assign this number elsewhere until MySQL reconciliation.
             if reuse_pool is not None:
@@ -1431,24 +1806,9 @@ def create_5sim_phone_verifier(
             raise RuntimeError("OTP 已接受，但 MySQL 未确认手机号绑定；请核对账号记录")
         print(f"[codex-oauth] add-phone: MySQL 已绑定账号 ID={account_id}，此号码已占用 {claim.get('account_count')}/{max_accounts_per_phone} 个账号名额")
 
-        # ── 6) 完成订单 & 更新复用池 ──
-        try:
-            await run_5sim(
-                lambda call_proxy, call_proxy_insecure: num5sim.finish_order(
-                    api_key=api_key,
-                    order_id=order_id,
-                    proxy=call_proxy,
-                    proxy_insecure=call_proxy_insecure,
-                ),
-                action="5sim 完成订单",
-            )
-            print(f"[codex-oauth] add-phone: 5sim 订单 {order_id} 已标记完成")
-        except Exception as e:
-            print(f"[codex-oauth] add-phone: 5sim finish 失败（不影响绑定）: {type(e).__name__}")
-
-        # 写入复用池（每号最多复用 DEFAULT_MAX_USES=3 次）
+        # 先保存原订单供后续账号沿用，名额以 MySQL 的绑定结果为准。
         if reuse_pool is not None:
-            entry = reuse_pool.add_or_update(
+            reuse_pool.add_or_update(
                 phone=phone, country=actual_country,
                 operator=order.operator or operator,
                 product=product, order_id=order_id,
@@ -1457,21 +1817,77 @@ def create_5sim_phone_verifier(
             reuse_pool.prune_expired()
             reuse_pool.save()
 
+        if reuse_pool is not None and claim.get("account_count", max_accounts_per_phone) < max_accounts_per_phone:
+            print(f"[codex-oauth] add-phone: 保留 5sim 订单 {order_id}，后续账号继续使用同一号码接码")
+            if pending_cancellation:
+                raise asyncio.CancelledError
+            return
+        try:
+            await run_5sim(
+                lambda call_proxy, call_proxy_insecure: num5sim.finish_order(
+                    api_key=api_key, order_id=order_id,
+                    proxy=call_proxy, proxy_insecure=call_proxy_insecure,
+                ), action="5sim 完成订单",
+            )
+            print(f"[codex-oauth] add-phone: 5sim 订单 {order_id} 已标记完成（号码名额已用完）")
+        except Exception as e:
+            print(f"[codex-oauth] add-phone: 5sim finish 失败（不影响绑定）: {type(e).__name__}")
+        if pending_cancellation:
+            raise asyncio.CancelledError
+
     async def verify(page) -> None:
-        async with selected_order() as (order, bind):
-            try:
-                await submit_order(page, order, bind)
-            except BaseException:
+        excluded_phones: set[str] = set()
+        banned_phones: set[str] = set()
+        acquisition = {"buy_attempts": 0}
+        replacement_limit = max(buy_limit, len(selected) or 1)
+        for replacement_attempt in range(replacement_limit):
+            async with selected_order(excluded_phones, acquisition, banned_phones) as (order, bind):
+                phone_bound = False
+
+                def commit_verified_phone():
+                    nonlocal phone_bound
+                    result = bind()
+                    phone_bound = bool(result.get("ok"))
+                    return result
+
                 try:
-                    await run_5sim(
-                        lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
-                            api_key=api_key, order_id=order.id, proxy=call_proxy,
-                            proxy_insecure=call_proxy_insecure,
-                        ), action="取消未完成订单",
-                    )
-                except Exception:
-                    print(f"[codex-oauth] add-phone: 订单 {order.id} 取消失败，请核对订单状态")
-                raise
+                    await submit_order(page, order, commit_verified_phone)
+                    return
+                except _FiveSimSmsDeliveryError:
+                    excluded_phones.add(order.phone)
+                    banned_phones.add(order.phone)
+                    print(f"[codex-oauth] add-phone: 号码 ****{order.phone[-4:]} 无法接收短信，立即 BAN 订单 {order.id} 并重新购买")
+                    try:
+                        await run_5sim(
+                            lambda call_proxy, call_proxy_insecure: num5sim.ban_order(
+                                api_key=api_key, order_id=order.id, proxy=call_proxy,
+                                proxy_insecure=call_proxy_insecure,
+                            ), action="BAN 无法接收短信的号码", retry_direct=False,
+                        )
+                        print(f"[codex-oauth] add-phone: 5sim 订单 {order.id} 已 BAN")
+                    except Exception as error:
+                        print(f"[codex-oauth] add-phone: 订单 {order.id} BAN 未确认（{type(error).__name__}），此号码不再使用，请核对订单状态")
+                    finally:
+                        if reuse_pool is not None:
+                            reuse_pool.remove(order.phone, product)
+                            reuse_pool.save()
+                except BaseException:
+                    if not phone_bound:
+                        try:
+                            await run_5sim(
+                                lambda call_proxy, call_proxy_insecure: num5sim.cancel_order(
+                                    api_key=api_key, order_id=order.id, proxy=call_proxy,
+                                    proxy_insecure=call_proxy_insecure,
+                                ), action="取消未完成订单",
+                            )
+                        except Exception:
+                            print(f"[codex-oauth] add-phone: 订单 {order.id} 取消失败，请核对订单状态")
+                    raise
+            if replacement_attempt + 1 >= replacement_limit:
+                break
+            # 重新进入号码表单，清除上个号码的 WhatsApp fallback 状态。
+            await page.goto(urllib.parse.urljoin(page.url, "/add-phone"), wait_until="domcontentloaded")
+        raise RuntimeError(f"连续 {replacement_limit} 个号码无法接收短信，已排除并达到换号上限")
 
     return verify
 

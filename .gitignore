@@ -13,6 +13,8 @@ relogin_required.json
 .claude/
 .codex/
 .playwright-cli/
+.agents/
+skills-lock.json
 
 # Python caches and virtual environments
 __pycache__/

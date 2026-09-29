@@ -408,6 +408,9 @@
             <input id="cooldown" type="number" min="0" value="30" />
           </label>
         </div>
+        <label><span>浏览器被关掉时自动重试次数 <code class="hint">--browser-retry</code></span>
+          <input id="browserRetry" type="number" min="0" value="1" />
+        </label>
 
         <details>
           <summary>本次运行</summary>
@@ -485,12 +488,18 @@
             </div><div class="hint" id="mhjcStatus">MHJC 邮箱有效期与验证码通过 IMAP（mail.mhjc.edu.kg:993）读取</div>
           <div class="row2">
             <label><span>MHJC 自定义用户名</span>
-              <input id="mhjcUsername" placeholder="留空随机生成（填了会尽量用，被占用自动加后缀）" />
+              <input id="mhjcUsername" placeholder="留空=按姓名随机生成（如 emma.wilson）；填了会尽量用，被占用自动加后缀" />
             </label>
-            <label><span>MHJC API Base</span>
-              <input id="mhjcApiBase" placeholder="https://api.mhjc.edu.kg/api" />
+            <label><span>留空时的命名方式</span>
+              <select id="mhjcNameStyle">
+                <option value="name">随机英文姓名（推荐，如 emma.wilson）</option>
+                <option value="provider">服务商默认（temp_xxxx，易被风控）</option>
+              </select>
             </label>
           </div>
+          <label><span>MHJC API Base</span>
+            <input id="mhjcApiBase" placeholder="https://api.mhjc.edu.kg/api" />
+          </label>
           <label><span>DuckDuckGo API Base</span>
             <input id="duckBaseUrl" placeholder="https://quack.duckduckgo.com" />
           </label>
@@ -517,6 +526,17 @@
 
         <div class="panel">
           <h2>高级设置</h2>
+<div class="row2">
+              <label><span>浏览器指纹</span>
+                <select id="fingerprintBrowser">
+                  <option value="stealth">内置指纹（每个账号一套，推荐）</option>
+                  <option value="off">关闭（用本机裸指纹）</option>
+                </select>
+              </label>
+              <label><span>说明</span>
+                <div class="hint" style="margin:0;">每个账号随机生成一套自洽画像（UA / 平台 / 语言 / 时区 / 分辨率 / WebGL / CPU 核心数），同一账号重登复用同一指纹；不依赖任何外部指纹浏览器。</div>
+              </label>
+            </div>
 <div class="row2">
               <label><span>QQ 轮询次数</span><input id="qqMaxAttempts" type="number" min="1" placeholder="90" /></label>
               <label><span>QQ 轮询间隔(秒)</span><input id="qqInterval" type="number" min="0.5" step="0.5" placeholder="1.5" /></label>
@@ -716,7 +736,8 @@
         <label><span>API Key <small id="fsApiKeyStatus">未检测</small></span>
           <input id="fsApiKey" type="password" autocomplete="new-password" placeholder="新密钥；留空保持已保存密钥" />
         </label>
-        <div class="checkrow"><input id="fsUseProxy" type="checkbox" checked /><label for="fsUseProxy">5sim 请求使用浏览器代理</label></div>
+        <div class="checkrow"><input id="fsUseProxy" type="checkbox" /><label for="fsUseProxy">5sim 请求使用浏览器代理（不勾选=直连，实测快约 6 倍）</label></div>
+        <div class="checkrow"><input id="fsAllowOtherProviders" type="checkbox" /><label for="fsAllowOtherProviders">列表全买不到时，才允许换到其它供应商（不勾选=只在下面勾选的供应商里选号）</label></div>
         <div class="row2">
           <label><span>服务名</span>
             <select id="fsProduct">
@@ -736,19 +757,29 @@
           <label><span>运营商过滤</span>
             <select id="fsOperatorFilter">
               <option value="any">any（不限）</option>
-              <option value="virtual21">virtual21</option>
-              <option value="virtual26">virtual26</option>
-              <option value="virtual47">virtual47</option>
-              <option value="virtual51">virtual51</option>
             </select>
           </label>
+          <label><span>搜索（国家 / 运营商）</span>
+            <input id="fsSearch" placeholder="如 greece 或 virtual66" />
+          </label>
+        </div>
+        <div class="row2">
           <label><span>最高限价</span>
             <input id="fsMaxPrice" type="number" min="0" step="0.01" placeholder="不限" />
+          </label>
+          <label><span>只看有库存</span>
+            <select id="fsOnlyStock">
+              <option value="1">只看有库存（推荐）</option>
+              <option value="0">显示全部（含 0 库存）</option>
+            </select>
           </label>
         </div>
         <div class="row2">
           <label><span>候选库存组合上限</span>
             <input id="fsCandidateLimit" type="number" min="1" max="100" value="8" />
+          </label>
+          <label><span>等短信轮询间隔（秒）</span>
+            <input id="fsPollInterval" type="number" min="1" max="15" step="0.5" value="2" />
           </label>
         </div>
         <div class="row2">
@@ -763,10 +794,25 @@
           <button id="fsQueryBtn" class="primary grow">查询价格</button>
           <button id="fsProfileBtn">查询余额</button>
         </div>
+
+        <!-- 已选供应商（顺序=购买优先级） -->
+        <div class="fivesim-order" id="fsProviderBox" style="display:none;">
+          <div class="row-between" style="margin-bottom: 4px;">
+            <span>🏪 已选供应商（<b id="fsProviderCount">0</b> 个，从上到下=购买优先级）</span>
+            <span id="fsProviderSaved" class="fivesim-badge">未保存</span>
+          </div>
+          <div id="fsProviderList" class="fivesim-scroll" style="max-height:150px;"></div>
+          <div class="btnrow" style="margin-top: 6px;">
+            <button class="small-btn primary" id="fsBuyPriorityBtn">按优先级买号</button>
+            <button class="small-btn" id="fsClearProvidersBtn">清空</button>
+            <span class="hint" style="margin-left:6px;">点价格表里的「选用」加入；↑↓ 调优先级；保存后自动接码也按这个顺序买</span>
+          </div>
+        </div>
+
         <div class="fivesim-scroll" id="fsPriceScroll" style="display:none;">
           <table>
             <thead><tr>
-              <th>国家/运营商</th><th>价格</th><th>库存</th><th>接码率</th><th></th>
+              <th>国家/运营商</th><th>价格</th><th>库存</th><th>接码率</th><th>供应商选择</th>
             </tr></thead>
             <tbody id="fsPriceBody"></tbody>
           </table>
@@ -1312,6 +1358,8 @@ async function saveSecrets() {
     pay153BaseUrl: $("pay153BaseUrl") ? $("pay153BaseUrl").value.trim() : "",
     mhjcApiBase: $("mhjcApiBase") ? $("mhjcApiBase").value.trim() : "",
     mhjcUsername: $("mhjcUsername") ? $("mhjcUsername").value.trim() : "",
+    mhjcNameStyle: $("mhjcNameStyle") ? $("mhjcNameStyle").value : "",
+    fingerprintBrowser: $("fingerprintBrowser") ? $("fingerprintBrowser").value : "",
     qqMaxAttempts: numOrNull("qqMaxAttempts"),
     qqInterval: numOrNull("qqInterval"),
     icloudLoginTimeout: numOrNull("icloudLoginTimeout"),
@@ -1326,6 +1374,7 @@ async function saveSecrets() {
     authMode: $("authMode") ? $("authMode").value : "",
     count: numOrNull("count"),
     cooldown: $("cooldown").value.trim() === "" ? null : Number($("cooldown").value),
+    browserRetry: numOrNull("browserRetry"),
     headless: $("headless").checked,
     noPersistent: $("noPersistent").checked,
     noClearTokens: $("noClearTokens").checked,
@@ -2125,9 +2174,12 @@ function buildPayload() {
     codeSource: $("codeSource").value,
     mhjcApiKey: $("mhjcApiKey") ? $("mhjcApiKey").value.trim() : "",
     mhjcUsername: $("mhjcUsername") ? $("mhjcUsername").value.trim() : "",
+    mhjcNameStyle: $("mhjcNameStyle") ? $("mhjcNameStyle").value : "",
+    fingerprintBrowser: $("fingerprintBrowser") ? $("fingerprintBrowser").value : "",
     authMode: $("authMode").value,
     count: Math.max(1, parseInt($("count").value || "1", 10)),
     cooldown: Math.max(0, parseInt($("cooldown").value || "0", 10)),
+    browserRetry: Math.max(0, parseInt(($("browserRetry") || {}).value || "0", 10)),
     email: $("email").value.trim(),
     password: $("password").value.trim(),
     duckToken: $("duckToken").value.trim(),
@@ -2252,6 +2304,8 @@ async function init() {
     if (d.icloudLoginTimeout) $("icloudLoginTimeout").value = d.icloudLoginTimeout;
     if (d.mhjcApiBase && $("mhjcApiBase")) $("mhjcApiBase").value = d.mhjcApiBase;
     if (d.mhjcUsername && $("mhjcUsername")) $("mhjcUsername").value = d.mhjcUsername;
+    if ($("mhjcNameStyle")) $("mhjcNameStyle").value = d.mhjcNameStyle || "name";
+    if ($("fingerprintBrowser")) $("fingerprintBrowser").value = d.fingerprintBrowser || "stealth";
     if ($("fsApiKeyStatus")) {
       fsApiKeyPresent = !!d.fiveSimApiKeyPresent;
       $("fsApiKeyStatus").textContent = d.fiveSimApiKeyPresent ? "已配置（留空保持现有密钥）" : "未配置";
@@ -2270,7 +2324,15 @@ async function init() {
     if (d.fiveSimMaxPrice != null && $("fsMaxPrice")) $("fsMaxPrice").value = d.fiveSimMaxPrice;
     if (d.fiveSimAcquirePriority && $("fsAcquirePriority")) $("fsAcquirePriority").value = d.fiveSimAcquirePriority;
     if (d.fiveSimCandidateLimit && $("fsCandidateLimit")) $("fsCandidateLimit").value = d.fiveSimCandidateLimit;
-    if ($("fsUseProxy")) $("fsUseProxy").checked = d.fiveSimUseProxy !== false;
+    if ($("fsUseProxy")) $("fsUseProxy").checked = d.fiveSimUseProxy === true;
+    if ($("fsAllowOtherProviders")) $("fsAllowOtherProviders").checked = d.fiveSimAllowOtherProviders === true;
+    if ($("fsPollInterval") && d.fiveSimPollInterval) $("fsPollInterval").value = d.fiveSimPollInterval;
+  fsProviders = Array.isArray(d.fiveSimProviders)
+    ? d.fiveSimProviders.filter(p => p && p.country).map(p => ({ country: p.country, operator: p.operator || "any" }))
+    : [];
+  fsProvidersSaved = true;
+  if ($("fsProviderSaved")) { $("fsProviderSaved").textContent = "已保存"; $("fsProviderSaved").style.color = "var(--ok)"; }
+  if ($("fsProviderBox")) fsRenderProviders();
     if (d.acCheckerBaseUrl) $("acBaseUrl").value = d.acCheckerBaseUrl;
     if (d.acCheckerPromoId) $("acPromoId").value = d.acCheckerPromoId;
     if (d.pay153BaseUrl) $("pay153BaseUrl").value = d.pay153BaseUrl;
@@ -2280,6 +2342,7 @@ async function init() {
     if (d.authMode && $("authMode")) $("authMode").value = d.authMode;
     if (d.count) $("count").value = d.count;
     if (d.cooldown !== "" && d.cooldown != null) $("cooldown").value = d.cooldown;
+    if (d.browserRetry !== "" && d.browserRetry != null && $("browserRetry")) $("browserRetry").value = d.browserRetry;
     ["headless", "noPersistent", "noClearTokens", "stopOnError", "runCodexOauth"].forEach(key => {
       if ($(key)) $(key).checked = !!d[key];
     });
@@ -2311,6 +2374,9 @@ async function init() {
   let fsActiveOrder = null;
   let fsCheckInterval = null;
   let fsApiKeyPresent = false;
+  // 已选供应商：数组顺序 = 购买优先级（第 1 个最优先）
+  let fsProviders = [];
+  let fsProvidersSaved = true;
 
   // -- DOM refs
   const fsApiKey = $("fsApiKey");
@@ -2334,6 +2400,116 @@ async function init() {
     return "rate-lo";
   }
 
+  // ── 已选供应商（优先级列表） ──
+  function fsProviderIndex(country, operator) {
+    return fsProviders.findIndex(p => p.country === country && p.operator === operator);
+  }
+
+  function fsMarkProvidersDirty() {
+    fsProvidersSaved = false;
+    $("fsProviderSaved").textContent = "未保存";
+    $("fsProviderSaved").style.color = "var(--warn)";
+  }
+
+  function fsToggleProvider(country, operator, checked) {
+    const index = fsProviderIndex(country, operator);
+    if (checked && index < 0) {
+      fsProviders.push({ country, operator });   // 新勾选的排在最后 = 优先级最低
+    } else if (!checked && index >= 0) {
+      fsProviders.splice(index, 1);
+    }
+    fsMarkProvidersDirty();
+    fsRenderProviders();
+    fsRenderPrices();
+  }
+
+  function fsMoveProvider(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= fsProviders.length) return;
+    const [row] = fsProviders.splice(index, 1);
+    fsProviders.splice(target, 0, row);
+    fsMarkProvidersDirty();
+    fsRenderProviders();
+    fsRenderPrices();
+  }
+
+  function fsRemoveProvider(index) {
+    fsProviders.splice(index, 1);
+    fsMarkProvidersDirty();
+    fsRenderProviders();
+    fsRenderPrices();
+  }
+
+  function fsRenderProviders() {
+    const box = $("fsProviderBox");
+    const list = $("fsProviderList");
+    $("fsProviderCount").textContent = fsProviders.length;
+    box.style.display = fsProviders.length ? "block" : "none";
+    if (!fsProviders.length) { list.innerHTML = ""; return; }
+    list.innerHTML = `<table class="fivesim-table"><tbody>${fsProviders.map((p, i) => `
+      <tr>
+        <td style="width:34px;color:var(--fg-muted);">${i + 1}.</td>
+        <td>${p.country} / <span style="color:var(--accent);">${p.operator}</span></td>
+        <td style="text-align:right;white-space:nowrap;">
+          <button class="small-btn" data-move="up" data-index="${i}" title="提高优先级" ${i === 0 ? "disabled" : ""}>↑</button>
+          <button class="small-btn" data-move="down" data-index="${i}" title="降低优先级" ${i === fsProviders.length - 1 ? "disabled" : ""}>↓</button>
+          <button class="small-btn danger" data-remove="${i}" title="移除">✕</button>
+        </td>
+      </tr>`).join("")}</tbody></table>`;
+    list.querySelectorAll("[data-move]").forEach(btn => {
+      btn.onclick = () => fsMoveProvider(Number(btn.dataset.index), btn.dataset.move === "up" ? -1 : 1);
+    });
+    list.querySelectorAll("[data-remove]").forEach(btn => {
+      btn.onclick = () => fsRemoveProvider(Number(btn.dataset.remove));
+    });
+  }
+
+  async function fsBuyByPriority() {
+    if (!fsProviders.length) {
+      $("fsError").textContent = "请先在价格表里勾选要购买的供应商";
+      $("fsError").style.display = "block";
+      return;
+    }
+    const apiKey = fsApiKeyValue();
+    if (!fsHasApiKey()) return;
+    const product = fsProduct.value.trim() || "openai";
+    const maxPriceVal = parseFloat(fsMaxPrice.value) || null;
+    if (fsActiveOrder && (fsActiveOrder.status === "PENDING" || fsActiveOrder.status === "RECEIVED")) {
+      if (!confirm("当前已有活跃订单，确认购买新号码？（建议先取消或完成当前订单）")) return;
+    }
+    const order = fsProviders.map(p => `${p.country}/${p.operator}`).join(" → ");
+    if (!confirm(`按优先级购买，失败自动切下一个：\n${order}`)) return;
+    $("fsError").style.display = "none";
+    $("fsBuyPriorityBtn").disabled = true;
+    const body = { apiKey, product, providers: fsProviders };
+    if (maxPriceVal) body.maxPrice = maxPriceVal;
+    try {
+      const r = await fetch("/api/5sim/buy-priority", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+      if (!r.ok) {
+        const tried = (r.attempts || []).map(a =>
+          `${a.priority}. ${a.country}/${a.operator} ✗ ${a.ok ? "" : a.error}`).join("\n");
+        $("fsError").textContent = (r.error || "购买失败") + (tried ? "\n" + tried : "");
+        $("fsError").style.display = "block";
+        return;
+      }
+      const used = (r.attempts || []).filter(a => !a.ok).length;
+      fsActiveOrder = r.order;
+      fsRenderActiveOrder();
+      fsStartAutoCheck();
+      fsRefreshPool();
+      if (used) flash($("fsProviderCount"), `跳过 ${used} 个无号供应商`);
+    } catch (e) {
+      $("fsError").textContent = "购买失败：" + e;
+      $("fsError").style.display = "block";
+    } finally {
+      $("fsBuyPriorityBtn").disabled = false;
+    }
+  }
+
   function fsRenderCountries() {
     const current = fsCountryFilter.value;
     const set = new Set(fsPrices.map(e => e.country));
@@ -2342,6 +2518,19 @@ async function init() {
     fsCountryFilter.replaceChildren(new Option("全部国家", ""));
     countries.forEach(country => fsCountryFilter.add(new Option(country, country)));
     fsCountryFilter.value = current;
+  }
+
+  // 运营商下拉必须来自真实报价数据：写死的 virtual21/26/47/51 会让
+  // 「greece + virtual66」这种组合根本筛不出来（virtual66 不在写死的列表里）。
+  function fsRenderOperators() {
+    const select = $("fsOperatorFilter");
+    if (!select) return;
+    const current = select.value || "any";
+    const set = new Set(fsPrices.map(e => e.operator).filter(Boolean));
+    const operators = [...set].sort();
+    select.replaceChildren(new Option("any（不限）", "any"));
+    operators.forEach(operator => select.add(new Option(operator, operator)));
+    select.value = set.has(current) ? current : "any";
   }
 
   function fsApplySort(list) {
@@ -2357,9 +2546,17 @@ async function init() {
   function fsRenderPrices() {
     const countryF = fsCountryFilter.value;
     const operatorF = fsOperatorFilter.value;
+    const keyword = ($("fsSearch") ? $("fsSearch").value : "").trim().toLowerCase();
+    const onlyStock = ($("fsOnlyStock") ? $("fsOnlyStock").value : "1") !== "0";
     let list = fsPrices;
     if (countryF) list = list.filter(e => e.country === countryF);
     if (operatorF && operatorF !== "any") list = list.filter(e => e.operator === operatorF);
+    if (onlyStock) list = list.filter(e => Number(e.count) > 0);
+    if (keyword) {
+      list = list.filter(e => `${e.country}/${e.operator}`.toLowerCase().includes(keyword)
+        || e.country.toLowerCase().includes(keyword)
+        || e.operator.toLowerCase().includes(keyword));
+    }
     list = fsApplySort([...list]);
 
     const tbody = $("fsPriceBody");
@@ -2378,20 +2575,34 @@ async function init() {
       return true;
     });
 
-    tbody.innerHTML = list.slice(0, 60).map(e => `<tr>
+    // 不截断：以前只渲染前 60 行，导致 greece/virtual66 这种接码率低但库存巨大的
+    // 组合被挤到第 100 行而根本勾不到。容器本身可滚动，全部渲染。
+    tbody.innerHTML = list.map(e => {
+      const index = fsProviderIndex(e.country, e.operator);
+      const picked = index >= 0;
+      return `<tr${picked ? ' style="background:rgba(88,166,255,0.10);"' : ""}>
       <td>${e.country} / <span style="color:var(--accent);">${e.operator}</span></td>
       <td>$${e.cost.toFixed(2)}</td>
       <td>${e.count}</td>
       <td><span class="${fsRateClass(e.rate)}">${e.rateStr}</span></td>
-      <td><button class="small-btn primary" data-country="${e.country}" data-operator="${e.operator}" data-cost="${e.cost}">买号</button></td>
-    </tr>`).join("");
+      <td style="white-space:nowrap;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+          <input type="checkbox" data-pick="1" data-country="${e.country}" data-operator="${e.operator}" ${picked ? "checked" : ""} />
+          <span>${picked ? `已选（第 ${index + 1} 优先级）` : "选用"}</span>
+        </label>
+      </td>
+    </tr>`;
+    }).join("");
 
-    document.querySelectorAll("#fsPriceBody .small-btn.primary").forEach(btn => {
-      btn.onclick = () => fsBuy(btn.dataset.country, btn.dataset.operator, parseFloat(btn.dataset.cost));
+    document.querySelectorAll("#fsPriceBody input[data-pick]").forEach(box => {
+      box.onchange = () => fsToggleProvider(box.dataset.country, box.dataset.operator, box.checked);
     });
+    fsRenderProviders();
 
     $("fsPriceInfo").style.display = "block";
-    $("fsPriceInfo").textContent = `共 ${list.length} 个报价（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先）`;
+    $("fsPriceInfo").textContent = `显示 ${list.length} 个供应商（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先`
+      + `${onlyStock ? '，仅看有库存' : ''}${keyword ? `，搜索 「${keyword}」` : ''}）`
+      + `；已选 ${fsProviders.length} 个，购买时按列表顺序尝试`;
     $("fsPriceScroll").style.display = "block";
   }
 
@@ -2411,8 +2622,10 @@ async function init() {
       if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
       fsPrices = r.entries;
       fsRenderCountries();
+      fsRenderOperators();
       fsRenderPrices();
-      $("fsPriceInfo").textContent = `共 ${r.total} 个报价（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先）· ${r.countries.length} 个国家`;
+      $("fsPriceInfo").textContent = `共 ${r.total} 个报价（${fsAcquirePriority.value === 'price' ? '价格' : '接码率'}优先）· ${r.countries.length} 个国家`
+        + `；用「搜索」或下拉筛选后勾选「选用」加入优先级列表`;
     } catch (e) {
       $("fsError").textContent = "查询失败：" + e;
       $("fsError").style.display = "block";
@@ -2436,36 +2649,6 @@ async function init() {
       $("fsBalance").textContent = `余额: ${p.balance || "?"} ${p.currency || ""}`;
     } catch (e) {
       $("fsError").textContent = "查询余额失败：" + e;
-      $("fsError").style.display = "block";
-    }
-  }
-
-  async function fsBuy(country, operator, cost) {
-    const apiKey = fsApiKeyValue();
-    if (!fsHasApiKey()) return;
-    const product = fsProduct.value.trim() || "openai";
-    const maxPriceVal = parseFloat(fsMaxPrice.value) || null;
-    if (fsActiveOrder && (fsActiveOrder.status === "PENDING" || fsActiveOrder.status === "RECEIVED")) {
-      if (!confirm("当前已有活跃订单，确认购买新号码？（建议先取消或完成当前订单）")) return;
-    }
-    const priceLabel = maxPriceVal ? `最高 $${maxPriceVal.toFixed(2)}` : `$${cost.toFixed(2)}`;
-    if (!confirm(`确认购买 ${country} / ${operator}，${priceLabel}？`)) return;
-    try {
-      const body = { apiKey, country, operator, product };
-      if (maxPriceVal) body.maxPrice = maxPriceVal;
-      const r = await fetch("/api/5sim/buy", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(body),
-      }).then(r => r.json());
-      if (!r.ok) { $("fsError").textContent = r.error; $("fsError").style.display = "block"; return; }
-      fsActiveOrder = r.order;
-      fsRenderActiveOrder();
-      fsStartAutoCheck();
-      // auto-refresh pool after purchase
-      fsRefreshPool();
-    } catch (e) {
-      $("fsError").textContent = "购买失败：" + e;
       $("fsError").style.display = "block";
     }
   }
@@ -2655,6 +2838,9 @@ async function init() {
       fiveSimAcquirePriority: fsAcquirePriority.value || "rate",
       fiveSimCandidateLimit: num($("fsCandidateLimit").value) || 8,
       fiveSimUseProxy: $("fsUseProxy").checked,
+      fiveSimAllowOtherProviders: $("fsAllowOtherProviders").checked,
+      fiveSimPollInterval: $("fsPollInterval").value,
+      fiveSimProviders: fsProviders,
     };
     if (apiKey) payload.fiveSimApiKey = apiKey;
     try {
@@ -2671,6 +2857,8 @@ async function init() {
           fiveSimProduct: "服务名", fiveSimMaxPrice: "最高限价",
           fiveSimAcquirePriority: "获取策略", fiveSimCandidateLimit: "候选库存组合上限",
           fiveSimUseProxy: "短信代理选项",
+          fiveSimAllowOtherProviders: "无号时是否换供应商",
+          fiveSimPollInterval: "等短信轮询间隔",
         };
         const fields = [...new Set(details.map(error => labels[(error.loc || []).at(-1)]).filter(Boolean))];
         throw new Error(outdated ? "服务器仍运行旧版短信设置接口，请重启 WebUI 服务后重试"
@@ -2679,7 +2867,10 @@ async function init() {
       fsApiKey.value = "";
       fsApiKeyPresent = !!result.fiveSimApiKeyPresent;
       $("fsApiKeyStatus").textContent = result.fiveSimApiKeyPresent ? "已配置（密钥不回显）" : "未配置";
-      alert("5sim 设置已保存到本地配置");
+      fsProvidersSaved = true;
+      $("fsProviderSaved").textContent = "已保存";
+      $("fsProviderSaved").style.color = "var(--ok)";
+      alert("5sim 设置已保存到本地配置（含 " + fsProviders.length + " 个供应商优先级）");
     } catch (e) {
       alert("保存失败：" + e);
     }
@@ -2692,11 +2883,22 @@ async function init() {
   $("fsCancelBtn").onclick = fsCancelOrder;
   $("fsFinishBtn").onclick = fsFinishOrder;
   $("fsSaveKey").onclick = fsSaveApiKey;
+  $("fsBuyPriorityBtn").onclick = fsBuyByPriority;
+  $("fsClearProvidersBtn").onclick = () => {
+    if (!fsProviders.length) return;
+    if (!confirm("清空已选的供应商？")) return;
+    fsProviders = [];
+    fsMarkProvidersDirty();
+    fsRenderProviders();
+    fsRenderPrices();
+  };
   $("fsPoolRefresh").onclick = fsRefreshPool;
   $("fsPoolClear").onclick = fsPoolClear;
   fsCountryFilter.onchange = () => { fsRenderPrices(); fsRenderCountries(); };
   fsOperatorFilter.onchange = () => { fsRenderPrices(); };
   fsAcquirePriority.onchange = () => { fsRenderPrices(); };
+  if ($("fsSearch")) $("fsSearch").oninput = () => fsRenderPrices();
+  if ($("fsOnlyStock")) $("fsOnlyStock").onchange = () => fsRenderPrices();
 
   // The API key is intentionally never returned; startup preserves only status.
   const _fsInit = init;

@@ -26,9 +26,10 @@ from dataclasses import dataclass
 from email.header import decode_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Callable
 
 from core.http_utils import open_url
+from data.names import random_mailbox_username
 
 DEFAULT_API_BASE = "https://api.mhjc.edu.kg/api"
 DEFAULT_IMAP_HOST = "mail.mhjc.edu.kg"
@@ -199,31 +200,58 @@ def create_unique_mailbox(
     timeout: float = 20.0,
     proxy: str | None = None,
     proxy_insecure: bool = False,
+    name_style: str = "name",
+    name_first: str = "",
+    name_last: str = "",
+    name_attempts: int = 4,
+    name_generator: "Callable[[], str] | None" = None,
 ) -> dict[str, Any]:
     """Create a mailbox that is guaranteed to have a free address.
 
-    A saved custom username can only ever be used once — the provider rejects a
-    repeat with HTTP 400 — so a name conflict is retried with a short unique
-    suffix and finally with a fully random address. Real errors (bad key, network)
-    are raised immediately instead of being masked by retries.
+    Address preference order:
+      1. an explicit ``username`` (a saved custom name can only ever be used once —
+         the provider rejects a repeat with HTTP 400 — so a conflict is retried with
+         a short unique suffix);
+      2. ``name_style="name"`` (default): locally generated person-name addresses such
+         as ``emma.wilson`` / ``emmadavis92``. The provider's own "random" default is
+         ``temp_<hex>``, which reads as a throwaway mailbox and is easy to flag;
+      3. the provider default (``username=""``) as the last resort.
 
-    When a fallback was needed the result carries `usernameFallback` so the caller
-    can tell the operator why the address differs from the requested one.
+    Real errors (bad key, network) are raised immediately instead of being masked by
+    retries. The result carries ``nameFallback`` (and ``usernameFallback`` when an
+    explicit name was requested) so the caller can tell the operator which candidate
+    actually got through.
     """
     wanted = str(username or "").strip()
-    attempts: list[str] = []
+    style = str(name_style or "name").strip().lower()
+
+    attempts: list[dict[str, str]] = []
     if wanted:
-        attempts.append(wanted)
-        attempts.append(f"{wanted}-{secrets.token_hex(2)}")
-    attempts.append("")
+        attempts.append({"username": wanted, "kind": "explicit"})
+        attempts.append({"username": f"{wanted}-{secrets.token_hex(2)}", "kind": "explicit-suffix"})
+
+    seen = {item["username"] for item in attempts}
+    if style != "provider":
+        generate = name_generator or (lambda: random_mailbox_username(name_first, name_last))
+        for _ in range(max(1, int(name_attempts))):
+            try:
+                generated = str(generate() or "").strip()
+            except Exception:  # a broken generator must not break registration
+                continue
+            if not generated or generated in seen:
+                continue
+            seen.add(generated)
+            attempts.append({"username": generated, "kind": "name"})
+
+    attempts.append({"username": "", "kind": "provider"})
 
     last_error: Exception | None = None
-    for index, candidate in enumerate(attempts):
+    for index, attempt in enumerate(attempts):
         try:
             created = create_mailbox(
                 api_key,
                 base_url=base_url,
-                username=candidate,
+                username=attempt["username"],
                 password=password,
                 ttl=ttl,
                 timeout=timeout,
@@ -235,8 +263,10 @@ def create_unique_mailbox(
             if not looks_like_name_conflict(str(exc)):
                 raise  # wrong key / network / invalid request: do not retry
             continue
-        if index and wanted:
-            created["usernameFallback"] = wanted
+        if index:
+            if wanted:
+                created["usernameFallback"] = wanted
+            created["nameFallback"] = attempt["kind"]
         return created
 
     raise last_error or MhjcApiError("创建 MHJC 邮箱失败")

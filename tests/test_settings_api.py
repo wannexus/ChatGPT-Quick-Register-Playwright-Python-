@@ -474,5 +474,103 @@ class ProxySwitchApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("QR_PROXY_ENABLED=''", text)
 
 
+class FiveSimProviderSettingsTests(unittest.IsolatedAsyncioTestCase):
+    """已选供应商列表（顺序=优先级）必须能存进 .env、再原样读回来。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.env_path = self.root / ".env"
+        self.env_path.write_text("", encoding="utf-8")
+        self.addCleanup(self._tmp.cleanup)
+        self._patches = [
+            patch.object(local_config, "ENV_PATH", self.env_path),
+            patch.object(local_config, "LEGACY_JSON_PATH", self.root / "none.json"),
+        ]
+        for item in self._patches:
+            item.start()
+        for item in reversed(self._patches):
+            self.addCleanup(item.stop)
+
+    async def test_provider_list_round_trips_and_keeps_priority_order(self):
+        picked = [
+            server.FiveSimProvider(country="usa", operator="virtual21"),
+            server.FiveSimProvider(country="poland", operator="virtual66"),
+        ]
+        with patch.dict(os.environ, {}, clear=True):
+            await server.update_defaults(server.LocalConfigPayload(fiveSimProviders=picked))
+            payload = await server.defaults()
+            text = self.env_path.read_text(encoding="utf-8")
+
+        self.assertIn("QR_FIVESIM_PROVIDERS=", text)
+        self.assertEqual(payload["fiveSimProviders"],
+                         [{"country": "usa", "operator": "virtual21"},
+                          {"country": "poland", "operator": "virtual66"}])
+
+    async def test_an_empty_list_clears_the_selection(self):
+        with patch.dict(os.environ, {}, clear=True):
+            await server.update_defaults(server.LocalConfigPayload(
+                fiveSimProviders=[server.FiveSimProvider(country="usa", operator="virtual21")]))
+            await server.update_defaults(server.LocalConfigPayload(fiveSimProviders=[]))
+            payload = await server.defaults()
+        self.assertEqual(payload["fiveSimProviders"], [])
+
+
+class FiveSimPriorityBuyRouteTests(unittest.IsolatedAsyncioTestCase):
+    """「按优先级买号」接口：失败要按顺序切到下一个供应商。"""
+
+    def _order(self, country, operator):
+        from core import num5sim
+        return num5sim.ActivationOrder(id=5, phone="+485518000111", operator=operator,
+                                       product="openai", price=0.2, status="PENDING",
+                                       expires="", country=country)
+
+    async def test_walks_the_list_and_reports_every_attempt(self):
+        from core import num5sim
+        calls: list[tuple[str, str]] = []
+
+        def fake_buy(**kwargs):
+            calls.append((kwargs["country"], kwargs["operator"]))
+            if len(calls) == 1:
+                raise num5sim.FiveSimNoFreePhonesError("no free phones")
+            return self._order(kwargs["country"], kwargs["operator"])
+
+        payload = server.FiveSimPriorityBuyPayload(
+            apiKey="key", product="openai",
+            providers=[server.FiveSimProvider(country="greece", operator="virtual34"),
+                       server.FiveSimProvider(country="poland", operator="virtual66")],
+        )
+        with patch.object(num5sim, "buy_activation", side_effect=fake_buy):
+            result = await server.five_sim_buy_priority(payload)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [("greece", "virtual34"), ("poland", "virtual66")])
+        self.assertEqual(result["order"]["country"], "poland")
+        self.assertEqual([a["ok"] for a in result["attempts"]], [False, True])
+
+    async def test_all_failures_return_the_priority_list(self):
+        from core import num5sim
+        payload = server.FiveSimPriorityBuyPayload(
+            apiKey="key",
+            providers=[server.FiveSimProvider(country="poland", operator="virtual66")],
+        )
+        with patch.object(num5sim, "buy_activation",
+                          side_effect=num5sim.FiveSimNoFreePhonesError("no free phones")):
+            response = await server.five_sim_buy_priority(payload)
+
+        self.assertEqual(response.status_code, 502)
+        body = json.loads(response.body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["attempts"][0]["country"], "poland")
+
+    async def test_an_empty_selection_is_rejected_before_spending_money(self):
+        from core import num5sim
+        with patch.object(num5sim, "buy_activation") as buy:
+            response = await server.five_sim_buy_priority(
+                server.FiveSimPriorityBuyPayload(apiKey="key", providers=[]))
+        self.assertEqual(response.status_code, 400)
+        buy.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

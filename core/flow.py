@@ -14,6 +14,15 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
+
+def _target_closed(error: BaseException) -> bool:
+    """Playwright 的 TargetClosedError 只从私有模块导出，按类名+文案判定。"""
+    return (
+        type(error).__name__ == "TargetClosedError"
+        or "has been closed" in str(error).lower()
+        or "target page, context or browser" in str(error).lower()
+    )
+
 from data.names import (
     Birthday,
     generate_password,
@@ -65,8 +74,26 @@ async def save_debug_artifacts(page: Page, label: str) -> None:
 
 SIGNUP_BUTTON_TEXTS = [
     "sign up for free", "sign up", "signup",
-    "免费注册", "注册", "创建账户", "创建账号",
+    "免费注册", "注册", "创建账户", "创建账号", "建立帳戶", "免費註冊",
     "create account", "register", "get started",
+    # 首页的 Sign up / Create account 按钮没有任何 data-testid，文案完全跟随
+    # 浏览器语言；而指纹画像会在 en/de/fr/nl/es/it/pl/sv/pt/id/vi/th/ja/ko/zh 之间
+    # 轮换（见 core/fingerprint.PERSONAS），所以文案表必须覆盖这些语言，
+    # 否则每次注册都要白等 25s 再走 auth URL 回退。
+    # 现网实测（波兰语画像）：首页按钮是 "Zarejestruj się za darmo"、"Utwórz konto"。
+    "kostenlos registrieren", "konto erstellen", "registrieren",
+    "inscription gratuite", "créer un compte", "s'inscrire", "s’inscrire",
+    "regístrate gratis", "crear cuenta", "regístrate",
+    "registrati gratis", "crea un account", "registrati",
+    "gratis aanmelden", "account aanmaken", "registreren",
+    "zarejestruj się", "utwórz konto",
+    "registrera dig", "skapa konto", "registrera",
+    "inscreva-se", "criar conta",
+    "daftar gratis", "buat akun",
+    "đăng ký", "tạo tài khoản",
+    "สมัครฟรี", "สร้างบัญชี", "สมัคร",
+    "無料で登録", "アカウントを作成", "新規登録",
+    "무료로 가입", "계정 만들기", "가입하기",
 ]
 LOGIN_BUTTON_TEXTS = [
     "log in", "login", "sign in", "登录", "登入",
@@ -119,7 +146,28 @@ CLOUDFLARE_CHALLENGE_MARKERS = (
     "cf-turnstile-response",
     "__cf_chl_",
     "challenge-error-text",
+    # 2026-09-29 真实抓包（/tmp 之外的 output/debug 快照同款）：托管挑战页的
+    # <title> 会随浏览器语言本地化（泰语 "รอสักครู่..."、西语等），但下面这些
+    # 令牌始终在 HTML 里，所以判定不能只靠英文 title 文案。
+    "cf_chl_opt",
+    "/cdn-cgi/challenge-platform/",
+    "cf-chl-",
 )
+# 挑战容器/iframe 的语言无关兜底（DOM 层，不看任何文案）。
+CLOUDFLARE_DOM_PROBE_JS = """
+() => {
+  try {
+    if (document.querySelector(
+      '#challenge-form, #challenge-running, #challenge-stage, #cf-challenge, '
+      + '#challenge-body-text, div.cf-turnstile, '
+      + 'iframe[src*="challenges.cloudflare.com"]'
+    )) return true;
+    return !!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]');
+  } catch (e) {
+    return false;
+  }
+}
+"""
 CLOUDFLARE_TEXT_PATTERNS = (
     re.compile(r"just a moment", re.IGNORECASE),
     re.compile(r"enable javascript and cookies to continue", re.IGNORECASE),
@@ -131,6 +179,9 @@ COMPLETE_TEXTS = [
 ]
 
 REG_SUCCESS_WAIT_SECONDS = 20
+# 托管挑战（"Just a moment..."）在这台机器+代理上实测需要 ~29s 才自动放行，
+# 所以「等挑战过去」的预算必须远大于点击 Sign up 的 25s 预算。
+CLOUDFLARE_WAIT_SECONDS = 300
 
 CodeFetcher = Callable[[], Awaitable[str]]
 
@@ -365,10 +416,56 @@ async def _detect_cloudflare_challenge(page: Page) -> bool:
     if any(marker.lower() in html for marker in CLOUDFLARE_CHALLENGE_MARKERS):
         return True
     try:
+        if await page.evaluate(CLOUDFLARE_DOM_PROBE_JS):
+            return True
+    except Exception:
+        pass
+    try:
         body = await _page_text(page)
     except Exception:
         body = ""
     return any(pattern.search(body) for pattern in CLOUDFLARE_TEXT_PATTERNS)
+
+
+async def _wait_for_cloudflare_clear(
+    page: Page,
+    *,
+    timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+    allow_manual_cloudflare: bool = False,
+    label: str = "cloudflare",
+    poll: float = 1.0,
+) -> bool:
+    """Wait until the Cloudflare interstitial is gone.
+
+    Returns True once the challenge is no longer detected, False on timeout.
+    Raises :class:`HeadlessBlockedError` in headless mode (nothing can solve the
+    challenge there) or when the page/browser goes away while waiting.
+    """
+    loop = asyncio.get_event_loop()
+    if not await _detect_cloudflare_challenge(page):
+        return True
+    if not allow_manual_cloudflare:
+        await _raise_if_cloudflare_challenge(page, label=f"{label}-challenge")
+    deadline = loop.time() + timeout_seconds
+    last_notice = 0.0
+    await save_debug_artifacts(page, f"{label}-challenge")
+    print(
+        "[cloudflare] 检测到 Cloudflare 托管挑战（页面标题可能被本地化，例如 'รอสักครู่...'）："
+        f"浏览器窗口会先停在验证页，通常 30s 左右自动放行；如超过 60s 可在窗口里手动点一下验证，"
+        f"最多等待 {int(timeout_seconds)}s（请勿关闭该窗口）"
+    )
+    while loop.time() < deadline:
+        if not await _detect_cloudflare_challenge(page):
+            print("[cloudflare] 验证已通过，继续注册流程")
+            return True
+        now = loop.time()
+        if now - last_notice >= 15:
+            print(f"[cloudflare] 等待验证通过... 剩余 {max(0, int(deadline - now))}s（不要关闭浏览器窗口）")
+            last_notice = now
+        await asyncio.sleep(poll)
+    await save_debug_artifacts(page, f"{label}-challenge-timeout")
+    print(f"[cloudflare] 等待 {int(timeout_seconds)}s 仍未通过验证，放弃")
+    return False
 
 
 def _looks_like_chatgpt_home(url: str) -> bool:
@@ -860,10 +957,69 @@ async def step1_open(page: Page) -> None:
         pass
 
 
-async def _try_click_signup(page: Page, *, total_timeout: float = 25) -> bool:
-    """Best-effort: try multiple ways to click the Sign up entry on chatgpt.com."""
-    deadline = asyncio.get_event_loop().time() + total_timeout
-    while asyncio.get_event_loop().time() < deadline:
+async def _logged_out_home_ready(page: Page) -> bool:
+    """未登录首页是否已经渲染完成（有指向 /auth/login 的入口）。
+
+    首页的 Sign up 按钮文案随语言变化且没有 data-testid，所以「文案没匹配上」并不
+    代表页面没加载完；但未登录首页在**任何语言**下都有指向 /auth/login（或其
+    login_with 变体）的链接，href 与语言无关，可以当作「首页已经渲染」的稳定信号。
+    """
+    try:
+        return bool(
+            await page.evaluate(
+                """() => document.readyState === 'complete' && !!document.querySelector(
+                     'a[href*="/auth/login"], a[href*="/auth/login_with"]'
+                   )"""
+            )
+        )
+    except Exception:
+        return False
+
+
+async def _try_click_signup(
+    page: Page,
+    *,
+    total_timeout: float = 25,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+    homepage_give_up_passes: int = 3,
+) -> bool:
+    """Best-effort: try multiple ways to click the Sign up entry on chatgpt.com.
+
+    A Cloudflare interstitial is not a failure: the challenge page has no Sign up
+    button at all, and in this environment it takes ~30s to clear (its title is
+    localized, e.g. Thai "รอสักครู่...", so it is detected by HTML/DOM markers).
+    While a challenge is up we keep waiting instead of burning the click budget,
+    otherwise the caller gives up right before the real homepage appears.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + total_timeout
+    cloudflare_deadline: float | None = None
+    last_challenge_notice = 0.0
+    passes = 0
+    while True:
+        now = loop.time()
+        limit = cloudflare_deadline if cloudflare_deadline is not None else deadline
+        if now >= limit:
+            return False
+        if await _detect_cloudflare_challenge(page):
+            if not allow_manual_cloudflare:
+                await _raise_if_cloudflare_challenge(page, label="step2-cloudflare-challenge")
+            if cloudflare_deadline is None:
+                cloudflare_deadline = now + cloudflare_timeout_seconds
+                await save_debug_artifacts(page, "step2-cloudflare-before-signup")
+                print(
+                    "[cloudflare] 点击 Sign up 之前页面仍是 Cloudflare 托管挑战（标题可能被本地化）；"
+                    f"先等它自动放行，最多 {int(cloudflare_timeout_seconds)}s（不要关闭浏览器窗口）"
+                )
+            if now - last_challenge_notice >= 15:
+                print(
+                    "[cloudflare] 等待挑战通过..."
+                    f" 剩余 {max(0, int(cloudflare_deadline - now))}s"
+                )
+                last_challenge_notice = now
+            await asyncio.sleep(1.0)
+            continue
         # 1) CSS selectors with stable testids / hrefs
         for sel in SIGNUP_BUTTON_CSS_SELECTORS:
             try:
@@ -872,7 +1028,9 @@ async def _try_click_signup(page: Page, *, total_timeout: float = 25) -> bool:
                     await loc.click(timeout=3000)
                     print(f"[step 2] clicked via selector: {sel}")
                     return True
-            except Exception:
+            except Exception as exc:
+                if _target_closed(exc):
+                    raise
                 continue
         # 2) Visible text fallback
         try:
@@ -881,8 +1039,16 @@ async def _try_click_signup(page: Page, *, total_timeout: float = 25) -> bool:
             return True
         except (PWTimeout, TimeoutError):
             pass
+        # 3) 首页已经渲染但没有可点的 Sign up（文案是没收录的语言）：
+        #    与其空转到 total_timeout，不如立刻交给 auth URL 回退。
+        passes += 1
+        if passes >= homepage_give_up_passes and await _logged_out_home_ready(page):
+            print(
+                "[step 2] 首页已经渲染，但没有匹配到 Sign up 按钮（按钮文案为本地化语言）；"
+                "直接改用 auth URL 回退，不再空转"
+            )
+            return False
         await asyncio.sleep(1)
-    return False
 
 
 EMAIL_INPUT_SELECTOR = (
@@ -955,10 +1121,31 @@ async def step2_signup_email(
     email: str,
     *,
     allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
 ) -> None:
     print(f"[step 2] 点 Sign up 并填邮箱：{email}")
 
-    clicked = await _try_click_signup(page, total_timeout=25)
+    # 登录页/首页可能先是 Cloudflare 托管挑战（标题被本地化），此时页面上根本
+    # 没有 Sign up 按钮。先把它等过去，避免把挑战页误判成「找不到按钮」。
+    if await _detect_cloudflare_challenge(page):
+        if not await _wait_for_cloudflare_clear(
+            page,
+            timeout_seconds=cloudflare_timeout_seconds,
+            allow_manual_cloudflare=allow_manual_cloudflare,
+            label="step2-cloudflare-before-signup",
+        ):
+            raise TimeoutError(
+                "首页一直是 Cloudflare 挑战页，没等到 Sign up 按钮。"
+                "如浏览器窗口仍开着可在窗口里手动完成验证后重试；"
+                "频繁出现请更换代理出口 IP。"
+            )
+
+    clicked = await _try_click_signup(
+        page,
+        total_timeout=25,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+    )
     if not clicked:
         # chatgpt.com itself uses this URL when you click the homepage Sign up
         # button. Going there directly skips the inline modal entirely.

@@ -45,6 +45,28 @@ class FiveSimToolTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FiveSimPriceTests(unittest.TestCase):
+    def test_rebuy_api_uses_digits_without_the_e164_plus_sign(self):
+        with patch.object(num5sim, "_get", return_value={}) as get:
+            num5sim.reuse_number("fixture", "+15550000001")
+        self.assertEqual(get.call_args.args[0], "/v1/user/reuse/openai/15550000001")
+
+    def test_rebuy_explicit_refusals_are_distinct_from_ambiguous_errors(self):
+        for message in ("reuse not possible", "reuse false", "reuse expired"):
+            with self.subTest(message=message), self.assertRaises(num5sim.FiveSimReuseUnavailableError):
+                num5sim._raise_text_error("/v1/user/reuse/openai/15550000001", message)
+        with self.assertRaises(num5sim.FiveSimError) as caught:
+            num5sim._raise_text_error("/v1/user/reuse/openai/15550000001", "server offline")
+        self.assertNotIsInstance(caught.exception, num5sim.FiveSimNoFreePhonesError)
+
+    def test_new_sms_with_the_same_code_is_identified_by_its_timestamp(self):
+        old = {"code": "654321", "date": "2026-09-29T10:00:00Z"}
+        new = {"code": "654321", "date": "2026-09-29T10:01:00Z"}
+        order = num5sim.ActivationOrder(1, "+15550000001", "any", "openai", 0.1, "RECEIVED", "", [old])
+        self.assertIsNone(order.code_since([old]))
+        order.sms = [new, old]
+        self.assertEqual(order.code_since([old]), "654321")
+        self.assertEqual(order.code, "654321")
+
     def test_price_priority_changes_the_purchase_candidate_order(self):
         prices = [num5sim.PriceEntry("usa", "any", "openai", 0.5, 1, 99),
                   num5sim.PriceEntry("vietnam", "any", "openai", 0.1, 1, 80)]

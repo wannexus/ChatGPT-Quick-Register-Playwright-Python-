@@ -14,8 +14,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.http_utils import open_url as _open_url
 
@@ -23,6 +24,20 @@ BASE_URL = "https://5sim.net"
 DEFAULT_MAX_USES = 3
 DEFAULT_PRODUCT = "openai"
 DEFAULT_OPERATOR = "any"
+
+# 只读接口（报价/候选/查短信）经代理实测约 3s/次、直连约 0.5s/次；
+# 超时给短一点，避免链路卡住时把整批注册拖死（买号仍用较长超时，因为它会真的下单）。
+METADATA_TIMEOUT = 10.0
+BUY_TIMEOUT = 25.0
+
+# 报价快照缓存：一次 find_buy_candidates 是全量报价（约 340 条），
+# 同一个 run 里多个账号会重复拉取，缓存后第二个账号起几乎不用等。
+PRICE_CACHE_TTL = 60.0
+_price_cache: Dict[tuple, tuple] = {}
+
+
+def clear_price_cache() -> None:
+    _price_cache.clear()
 
 # 复用池文件路径（相对于项目根目录）
 POOL_FILE_NAME = "num5sim_pool.json"
@@ -48,11 +63,25 @@ class FiveSimGatewayError(FiveSimError):
     """A gateway failed after a request may already have reached the provider."""
 
 
+class FiveSimReuseUnavailableError(FiveSimNoFreePhonesError):
+    """The provider explicitly rejected reopening a previous number."""
+
+
+class FiveSimOrderUnavailableError(FiveSimError):
+    """A previous order no longer exists or has expired."""
+
+
 def _raise_text_error(path: str, text: str) -> None:
     stripped = text.strip()
     lowered = stripped.lower()
     if "502 bad gateway" in lowered or "504 gateway timeout" in lowered:
         raise FiveSimGatewayError("5sim 网关返回 502/504，请求结果尚未确认")
+    if path.startswith("/v1/user/reuse/") and lowered in {
+        "reuse not possible", "reuse false", "reuse expired",
+    }:
+        raise FiveSimReuseUnavailableError("5sim 号码已无法重新购买")
+    if path.startswith("/v1/user/check/") and lowered in {"order not found", "order expired"}:
+        raise FiveSimOrderUnavailableError("5sim 原订单不存在或已过期")
     if "no free phones" in lowered:
         raise FiveSimNoFreePhonesError(
             f"5sim 暂无可用号码 path={path}: {stripped}"
@@ -138,6 +167,122 @@ class PriceEntry:
         return (-self.rate, self.cost, -self.count)
 
 
+# 供应商 = (country, operator)；列表顺序即购买优先级。
+Provider = Tuple[str, str]
+
+
+def _clean_provider_part(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "_")
+
+
+def provider_key(country: Any, operator: Any) -> Provider:
+    """统一的 (country, operator) 键；空值归一成 "any"。"""
+    c = _clean_provider_part(country) or "any"
+    o = _clean_provider_part(operator) or "any"
+    return (c, o)
+
+
+def parse_providers(raw: Any) -> List[Provider]:
+    """解析「选定的供应商 + 优先级顺序」，顺序即优先级。
+
+    接受三种写法：
+    - JSON 对象数组：`[{"country":"poland","operator":"virtual66"}, ...]`（WebUI 保存的格式）
+    - JSON 字符串数组：`["poland/virtual66", "greece/virtual34"]`
+    - 纯文本：`poland/virtual66, greece/virtual34`（或换行分隔）
+
+    解析失败/空值只跳过、不抛异常：配置读坏了不应该让注册流程起不来。
+    """
+    if raw is None:
+        return []
+    text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+    text = text.strip()
+    if not text:
+        return []
+    items: List[Any] = []
+    if text[:1] in "[{":
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            return []  # 看起来是 JSON 但坏了：当作没选，不用垃圾值去下单
+        if isinstance(parsed, dict):
+            items = [parsed]
+        elif isinstance(parsed, list):
+            items = parsed
+    else:
+        items = text.replace("\n", ",").split(",")
+
+    providers: List[Provider] = []
+    seen: set[Provider] = set()
+    for item in items:
+        country: Any = ""
+        operator: Any = "any"
+        if isinstance(item, dict):
+            country, operator = item.get("country"), item.get("operator")
+        elif isinstance(item, (list, tuple)):
+            if not item:
+                continue
+            country = item[0]
+            operator = item[1] if len(item) > 1 else "any"
+        else:
+            token = str(item or "").strip()
+            for separator in ("/", "|", ":", " "):
+                if separator in token:
+                    country, operator = token.split(separator, 1)
+                    break
+            else:
+                country = token
+        if not str(country or "").strip():
+            continue
+        key = provider_key(country, operator)
+        if key in seen:
+            continue
+        seen.add(key)
+        providers.append(key)
+    return providers
+
+
+def format_providers(providers: Any) -> str:
+    """序列化成 `.env` 里保存的 JSON 文本（空列表 → `[]`）。"""
+    return json.dumps(
+        [{"country": c, "operator": o} for c, o in parse_providers(providers)],
+        ensure_ascii=False,
+    )
+
+
+def format_provider(provider: Provider) -> str:
+    country, operator = provider
+    return f"{country}/{operator}"
+
+
+def stock_counts(
+    product: str = DEFAULT_PRODUCT,
+    *,
+    proxy: Optional[str] = None,
+    proxy_insecure: bool = False,
+    timeout: float = METADATA_TIMEOUT,
+    use_cache: bool = True,
+) -> Dict[Provider, int]:
+    """一次查询拿到所有国家的库存快照：{(country, operator): count}。
+
+    按优先级买号时先跳过明显没库存的供应商，省掉注定失败的买号请求；
+    查询失败返回空字典（只当没有提示，不影响之后的真实购买）。
+    """
+    try:
+        entries = query_prices(
+            product=product, proxy=proxy, proxy_insecure=proxy_insecure,
+            timeout=timeout, use_cache=use_cache,
+        )
+    except Exception:  # noqa: BLE001 — 提示性数据，失败不阻断购买
+        return {}
+    counts: Dict[Provider, int] = {}
+    for entry in entries:
+        if entry.product != product:
+            continue
+        key = provider_key(entry.country, entry.operator)
+        counts[key] = max(counts.get(key, 0), int(entry.count or 0))
+    return counts
+
+
 @dataclass
 class ActivationOrder:
     id: int
@@ -152,14 +297,34 @@ class ActivationOrder:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
+    def active(self) -> bool:
+        if self.status not in {"PENDING", "RECEIVED"}:
+            return False
+        if not self.expires:
+            return True
+        try:
+            expires = datetime.fromisoformat(self.expires.replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            return expires > datetime.now(timezone.utc)
+        except ValueError:
+            return False
+
+    def code_since(self, previous_sms: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+        def identity(msg):
+            return tuple(str(msg.get(key) or "") for key in
+                         ("id", "created_at", "date", "sender", "code"))
+
+        seen = {identity(msg) for msg in (previous_sms or []) if isinstance(msg, dict)}
+        messages = [(index, msg) for index, msg in enumerate(self.sms or [])
+                    if isinstance(msg, dict) and msg.get("code") and identity(msg) not in seen]
+        messages.sort(key=lambda item: (str(item[1].get("date") or item[1].get("created_at") or ""),
+                                        item[0]), reverse=True)
+        return str(messages[0][1]["code"]) if messages else None
+
+    @property
     def code(self) -> Optional[str]:
-        if not self.sms:
-            return None
-        for msg in self.sms:
-            c = msg.get("code")
-            if c:
-                return str(c)
-        return None
+        return self.code_since()
 
 
 @dataclass
@@ -341,9 +506,18 @@ def query_prices(
     *,
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
-    timeout: float = 30.0,
+    timeout: float = METADATA_TIMEOUT,
+    use_cache: bool = True,
 ) -> List[PriceEntry]:
-    """查询 5sim 价格（无需 API key），返回按接码率降序排列的列表。"""
+    """查询 5sim 价格（无需 API key），返回按接码率降序排列的列表。
+
+    use_cache：命中 60 秒内的快照就直接返回，避免每次买号都拉一遍全量报价。
+    """
+    cache_key = (product, country or "", bool(proxy), proxy_insecure)
+    if use_cache:
+        cached = _price_cache.get(cache_key)
+        if cached and time.time() - cached[0] <= PRICE_CACHE_TTL:
+            return list(cached[1])
     parts = []
     if product and product != "other":
         parts.append(f"product={product}")
@@ -351,7 +525,10 @@ def query_prices(
         parts.append(f"country={country}")
     qs = "?" + "&".join(parts) if parts else ""
     data = _get(f"/v1/guest/prices{qs}", proxy=proxy, proxy_insecure=proxy_insecure, timeout=timeout)
-    return _parse_price_entries(data, product_filter=product, country_filter=country)
+    entries = _parse_price_entries(data, product_filter=product, country_filter=country)
+    if use_cache:
+        _price_cache[cache_key] = (time.time(), list(entries))
+    return entries
 
 
 def find_buy_candidates(
@@ -362,14 +539,18 @@ def find_buy_candidates(
     max_price: Optional[float] = None,
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
-    timeout: float = 30.0,
+    timeout: float = METADATA_TIMEOUT,
     limit: int = 8,
     priority: str = "rate",
+    strict_provider: bool = False,
 ) -> List[PriceEntry]:
     """Find the best in-stock candidate country/operator pairs for purchase.
 
     This is used as a fallback when `any/any` (or a partially-specific filter)
     returns `no free phones`.
+
+    strict_provider=True（默认由调用方按「短信设置里选的供应商」决定）时，
+    候选只在用户选定的国家/运营商范围内找，不会跑到别的供应商去买。
     """
     entries = query_prices(
         product=product,
@@ -379,6 +560,11 @@ def find_buy_candidates(
         timeout=timeout,
     )
     filtered = [e for e in entries if e.product == product and e.count > 0]
+    if strict_provider:
+        if country and country != "any":
+            filtered = [e for e in filtered if e.country == country]
+        if operator and operator != "any":
+            filtered = [e for e in filtered if e.operator == operator]
     if max_price is not None:
         filtered = [e for e in filtered if e.cost <= max_price]
 
@@ -427,7 +613,7 @@ def buy_activation(
     enable_reuse: bool = True,
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
-    timeout: float = 30.0,
+    timeout: float = BUY_TIMEOUT,
 ) -> ActivationOrder:
     """购买激活号码。
 
@@ -463,13 +649,16 @@ def reuse_number(
     *,
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
-    timeout: float = 30.0,
+    timeout: float = BUY_TIMEOUT,
 ) -> ActivationOrder:
     """复用已有号码。调用 5sim /v1/user/reuse/{product}/{phone}。
 
     成功返回新的 ActivationOrder（状态 PENDING 或 RECEIVED）。
     """
-    path = f"/v1/user/reuse/{product}/{phone}"
+    number = str(phone or "").strip().lstrip("+")
+    if not (number.isascii() and number.isdigit() and 4 <= len(number) <= 15):
+        raise ValueError("5sim 复用号码必须为 4-15 位数字")
+    path = f"/v1/user/reuse/{product}/{number}"
     data = _get(path, api_key=api_key, proxy=proxy, proxy_insecure=proxy_insecure, timeout=timeout)
     return ActivationOrder(
         id=int(data.get("id", 0)),
@@ -485,7 +674,7 @@ def reuse_number(
     )
 
 
-def check_order(api_key: str, order_id: int, *, proxy: Optional[str] = None, proxy_insecure: bool = False, timeout: float = 15.0) -> ActivationOrder:
+def check_order(api_key: str, order_id: int, *, proxy: Optional[str] = None, proxy_insecure: bool = False, timeout: float = METADATA_TIMEOUT) -> ActivationOrder:
     """检查订单状态 / 获取短信。"""
     data = _get(f"/v1/user/check/{order_id}", api_key=api_key, proxy=proxy, proxy_insecure=proxy_insecure, timeout=timeout)
     return ActivationOrder(

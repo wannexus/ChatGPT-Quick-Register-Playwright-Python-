@@ -259,6 +259,8 @@ async def defaults():
         "duckTokenPresent": bool(cfg.get("duckToken")),
         "mhjcApiKeyPresent": bool(cfg.get("mhjcApiKey")),
         "mhjcUsername": cfg.get("mhjcUsername") or "",
+        "mhjcNameStyle": cfg.get("mhjcNameStyle") or "name",
+        "fingerprintBrowser": cfg.get("fingerprintBrowser") or "stealth",
         "mhjcApiBase": cfg.get("mhjcApiBase") or mhjc_api_base(),
         "qqUserPresent": bool(cfg.get("qqUser")),
         "qqPassPresent": bool(cfg.get("qqPass")),
@@ -278,7 +280,11 @@ async def defaults():
         "fiveSimMaxPrice": cfg.get("fiveSimMaxPrice") or "",
         "fiveSimAcquirePriority": cfg.get("fiveSimAcquirePriority") or "rate",
         "fiveSimCandidateLimit": cfg.get("fiveSimCandidateLimit") or "8",
-        "fiveSimUseProxy": _saved_flag_value(cfg.get("fiveSimUseProxy", "1")),
+        "fiveSimUseProxy": _saved_flag_value(cfg.get("fiveSimUseProxy", "0")),
+        "fiveSimAllowOtherProviders": _saved_flag_value(cfg.get("fiveSimAllowOtherProviders", "0")),
+        "fiveSimPollInterval": cfg.get("fiveSimPollInterval") or "2",
+        "fiveSimProviders": [{"country": c, "operator": o}
+                             for c, o in num5sim.parse_providers(cfg.get("fiveSimProviders") or "[]")],
         "acCheckerBaseUrl": cfg.get("acCheckerBaseUrl") or ac_checker.DEFAULT_BASE_URL,
         "acCheckerPromoId": cfg.get("acCheckerPromoId") or ac_checker.DEFAULT_PROMO_ID,
         "pay153BaseUrl": cfg.get("pay153BaseUrl") or pay153.DEFAULT_BASE_URL,
@@ -296,6 +302,7 @@ async def defaults():
         "authMode": cfg.get("authMode") or "",
         "count": cfg.get("count") or "",
         "cooldown": cfg.get("cooldown") or "",
+        "browserRetry": cfg.get("browserRetry") or "1",
         "headless": _saved_flag_value(cfg.get("headless")),
         "noPersistent": _saved_flag_value(cfg.get("noPersistent")),
         "noClearTokens": _saved_flag_value(cfg.get("noClearTokens")),
@@ -314,6 +321,13 @@ async def defaults():
     }
 
 
+class FiveSimProvider(BaseModel):
+    """一个选定的 5sim 供应商（country + operator）。"""
+
+    country: str = ""
+    operator: str = "any"
+
+
 class LocalConfigPayload(BaseModel):
     # `forbid` so a newly added UI field can never be silently dropped again.
     model_config = {"extra": "forbid"}
@@ -325,6 +339,8 @@ class LocalConfigPayload(BaseModel):
     mhjcApiKey: str = ""
     mhjcApiBase: str = ""
     mhjcUsername: str = ""
+    mhjcNameStyle: str = ""
+    fingerprintBrowser: str = ""
     qqUser: str = ""
     qqPass: str = ""
     qqMaxAttempts: Optional[int] = None
@@ -337,7 +353,10 @@ class LocalConfigPayload(BaseModel):
     fiveSimMaxPrice: str = ""
     fiveSimAcquirePriority: str = "rate"
     fiveSimCandidateLimit: Optional[int] = 8
-    fiveSimUseProxy: bool = True
+    fiveSimUseProxy: bool = False
+    fiveSimAllowOtherProviders: bool = False
+    fiveSimPollInterval: Optional[float] = None
+    fiveSimProviders: List[FiveSimProvider] = []
     acCheckerBaseUrl: str = ""
     acCheckerPromoId: str = ""
     pay153BaseUrl: str = ""
@@ -354,6 +373,7 @@ class LocalConfigPayload(BaseModel):
     authMode: str = ""
     count: Optional[int] = None
     cooldown: Optional[int] = None
+    browserRetry: Optional[int] = None
     headless: bool = False
     noPersistent: bool = False
     noClearTokens: bool = False
@@ -470,6 +490,9 @@ async def update_defaults(payload: LocalConfigPayload):
     values = payload.model_dump(exclude_unset=True)
     if not str(values.get("fiveSimApiKey") or "").strip():
         values.pop("fiveSimApiKey", None)
+    if "fiveSimProviders" in values:
+        # 供应商列表在 .env 里存 JSON 文本，顺序=优先级
+        values["fiveSimProviders"] = num5sim.format_providers(values["fiveSimProviders"])
     saved = save_config(values)
     return {
         "ok": True,
@@ -670,6 +693,7 @@ class BatchPayload(BaseModel):
     authMode: str = "otp"
     count: int = 1
     cooldown: int = 30
+    browserRetry: Optional[int] = None
     email: str = ""
     password: str = ""
     duckToken: str = ""
@@ -680,6 +704,8 @@ class BatchPayload(BaseModel):
     mhjcApiKey: str = ""
     mhjcApiBase: str = ""
     mhjcUsername: str = ""
+    mhjcNameStyle: str = ""
+    fingerprintBrowser: str = ""
     mhjcTtl: Optional[int] = None
     mhjcMaxAttempts: Optional[int] = None
     mhjcInterval: Optional[float] = None
@@ -711,6 +737,8 @@ def _build_args(p: BatchPayload) -> List[str]:
         "--count", str(max(1, p.count)),
         "--cooldown", str(max(0, p.cooldown)),
     ]
+    if p.browserRetry is not None:
+        args += ["--browser-retry", str(max(0, int(p.browserRetry)))]
     if p.email: args += ["--email", p.email]
     if p.password: args += ["--password", p.password]
     if p.duckToken: args += ["--duck-token", p.duckToken]
@@ -721,6 +749,8 @@ def _build_args(p: BatchPayload) -> List[str]:
     if p.mhjcApiKey: args += ["--mhjc-api-key", p.mhjcApiKey]
     if p.mhjcApiBase: args += ["--mhjc-api-base", p.mhjcApiBase]
     if p.mhjcUsername: args += ["--mhjc-username", p.mhjcUsername]
+    if p.mhjcNameStyle: args += ["--mhjc-name-style", p.mhjcNameStyle]
+    if p.fingerprintBrowser: args += ["--fingerprint-browser", p.fingerprintBrowser]
     if p.mhjcTtl is not None: args += ["--mhjc-ttl", str(p.mhjcTtl)]
     if p.mhjcMaxAttempts is not None: args += ["--mhjc-max-attempts", str(p.mhjcMaxAttempts)]
     if p.mhjcInterval is not None: args += ["--mhjc-interval", str(p.mhjcInterval)]
@@ -1454,10 +1484,17 @@ def _configured_fivesim_api_key(supplied: str = "") -> str:
 
 def _fivesim_config() -> dict:
     cfg = dict(effective_config())
-    if not _saved_flag_value(cfg.get("fiveSimUseProxy", "1")):
+    if not _saved_flag_value(cfg.get("fiveSimUseProxy", "0")):
         cfg["proxy"] = ""
         cfg["proxyInsecure"] = ""
     return cfg
+
+
+class FiveSimPriorityBuyPayload(BaseModel):
+    apiKey: str = ""
+    product: str = "openai"
+    maxPrice: Optional[float] = None
+    providers: List[FiveSimProvider] = []
 
 
 class FiveSimReusePayload(BaseModel):
@@ -1546,6 +1583,71 @@ async def five_sim_buy(payload: FiveSimBuyPayload):
         }
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/5sim/buy-priority")
+async def five_sim_buy_priority(payload: FiveSimPriorityBuyPayload):
+    """按「已选供应商」的优先级顺序买号：某个买不到就切到下一个优先级。
+
+    手动买号走这里，语义与自动接码一致：只在勾选的供应商里选号。
+    """
+    api_key = _configured_fivesim_api_key(payload.apiKey)
+    if not api_key:
+        return JSONResponse({"ok": False, "error": "请先在短信设置中配置 5sim API key"}, status_code=400)
+    providers = num5sim.parse_providers(
+        [{"country": p.country, "operator": p.operator} for p in payload.providers]
+    )
+    if not providers:
+        return JSONResponse({"ok": False, "error": "请先在价格列表里勾选要购买的供应商"}, status_code=400)
+    cfg = _fivesim_config()
+    proxy = cfg.get("proxy") or None
+    proxy_insecure = str(cfg.get("proxyInsecure") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def attempt_all():
+        attempts: list[dict] = []
+        for index, (country, operator) in enumerate(providers, start=1):
+            try:
+                order = num5sim.buy_activation(
+                    api_key=api_key, country=country, operator=operator,
+                    product=payload.product, max_price=payload.maxPrice,
+                    proxy=proxy, proxy_insecure=proxy_insecure,
+                )
+                attempts.append({"priority": index, "country": country, "operator": operator,
+                                 "ok": True, "error": ""})
+                return order, attempts
+            except Exception as exc:  # noqa: BLE001 — 逐个降级，失败在最后统一报
+                attempts.append({"priority": index, "country": country, "operator": operator,
+                                 "ok": False, "error": str(exc)})
+        return None, attempts
+
+    try:
+        order, attempts = await asyncio.get_event_loop().run_in_executor(None, attempt_all)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    if order is None:
+        detail = "、".join(f"{a['country']}/{a['operator']}" for a in attempts)
+        reason = attempts[-1]["error"] if attempts else ""
+        return JSONResponse(
+            {"ok": False, "attempts": attempts,
+             "error": f"{len(attempts)} 个供应商按优先级全部买不到（{detail}）：{reason}"},
+            status_code=502,
+        )
+    return {
+        "ok": True,
+        "attempts": attempts,
+        "order": {
+            "id": order.id,
+            "phone": order.phone,
+            "operator": order.operator,
+            "product": order.product,
+            "price": order.price,
+            "status": order.status,
+            "expires": order.expires,
+            "sms": order.sms,
+            "country": order.country,
+            "code": order.code,
+        },
+    }
 
 
 @app.post("/api/5sim/check/{order_id}")

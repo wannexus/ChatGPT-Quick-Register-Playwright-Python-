@@ -8,6 +8,7 @@ from email.message import EmailMessage
 from unittest.mock import AsyncMock, Mock, patch
 
 from core import mhjc
+from data import names
 
 
 class _Response(io.BytesIO):
@@ -283,6 +284,11 @@ class RegisterMhjcWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("MailPass@2026", output.getvalue())
         self.assertEqual(result.account_id, 7)
         create.assert_called_once()
+        # 邮箱用户名来自注册档案姓名（flow.random_profile 被 patch 成 First/Last），不再是 temp_
+        generated = create.call_args.kwargs["username"]
+        self.assertTrue(names.MAILBOX_USERNAME_PATTERN.match(generated), generated)
+        self.assertIn("last", generated)
+        self.assertNotIn("temp_", generated)
 
 
 class UniqueMailboxTests(unittest.TestCase):
@@ -303,8 +309,69 @@ class UniqueMailboxTests(unittest.TestCase):
             result = mhjc.create_unique_mailbox("key", **kwargs)
         return result, calls
 
+    def test_generated_person_name_is_preferred_over_the_provider_default(self):
+        # 旧行为是直接把 username="" 交给服务端，服务端会给出 temp_<hex> 这种一眼临时的地址
+        result, calls = self._create(lambda i: "emma.wilson", name_generator=lambda: "emma.wilson")
+        self.assertEqual(calls, ["emma.wilson"])
+        self.assertEqual(result["email"], "emma.wilson@mhjc.edu.kg")
+        self.assertNotIn("usernameFallback", result)
+        self.assertNotIn("nameFallback", result)
+
+    def test_generated_name_uses_the_signup_profile_name_when_available(self):
+        # 排版随机（emma.wilson / emmawilson92 / ewilson346 ...），但姓名必须来自注册档案
+        for _ in range(30):
+            result, calls = self._create(lambda i: "ok", name_first="Emma", name_last="Wilson")
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(names.MAILBOX_USERNAME_PATTERN.match(calls[0]), calls)
+            self.assertIn("wilson", calls[0])
+            self.assertTrue(calls[0].startswith(("emma", "e")), calls)
+
+    def test_a_taken_generated_name_is_retried_with_another_name(self):
+        generated = iter(["emma.wilson", "emma.davis92", "emmawilson"])
+
+        def outcome(index):
+            if index == 0:
+                return mhjc.MhjcApiError("HTTP 400：user 'emma.wilson' already exists")
+            return "emma.davis92"
+
+        result, calls = self._create(outcome, name_generator=lambda: next(generated))
+        self.assertEqual(calls[:2], ["emma.wilson", "emma.davis92"])
+        self.assertEqual(result["nameFallback"], "name")
+        self.assertNotIn("usernameFallback", result)
+
+    def test_provider_default_is_only_the_last_resort(self):
+        def outcome(index):
+            return mhjc.MhjcApiError("HTTP 400：user already exists")
+
+        calls = []
+
+        def fake_create(api_key, **inner):
+            calls.append(inner.get("username", ""))
+            raise outcome(len(calls) - 1)
+
+        with patch.object(mhjc, "create_mailbox", side_effect=fake_create):
+            with self.assertRaises(mhjc.MhjcApiError):
+                mhjc.create_unique_mailbox("key", name_generator=lambda: "emma.wilson", name_attempts=1)
+        self.assertEqual(calls, ["emma.wilson", ""], "只有姓名候选全部被占用才回落服务端默认")
+
+    def test_provider_fallback_is_reported_to_the_caller(self):
+        def outcome(index):
+            if index == 0:
+                return mhjc.MhjcApiError("HTTP 400：user 'emma.wilson' already exists")
+            return "temp_aabbcc"
+
+        result, calls = self._create(outcome, name_generator=lambda: "emma.wilson", name_attempts=1)
+        self.assertEqual(calls, ["emma.wilson", ""])
+        self.assertEqual(result["username"], "temp_aabbcc")
+        self.assertEqual(result["nameFallback"], "provider")
+
+    def test_provider_style_keeps_the_old_single_attempt_behaviour(self):
+        result, calls = self._create(lambda i: "temp_aabbcc", name_style="provider")
+        self.assertEqual(calls, [""])
+        self.assertEqual(result["email"], "temp_aabbcc@mhjc.edu.kg")
+
     def test_random_name_when_nothing_is_requested(self):
-        result, calls = self._create(lambda i: "random123")
+        result, calls = self._create(lambda i: "random123", name_style="provider")
         self.assertEqual(calls, [""])
         self.assertEqual(result["email"], "random123@mhjc.edu.kg")
         self.assertNotIn("usernameFallback", result)
@@ -327,17 +394,24 @@ class UniqueMailboxTests(unittest.TestCase):
         self.assertEqual(result["usernameFallback"], "wanted")
         self.assertEqual(result["email"], "wanted-ab12@mhjc.edu.kg")
 
-    def test_falls_back_to_a_fully_random_name_when_even_the_suffix_is_taken(self):
+    def test_falls_back_to_a_generated_name_when_the_suffix_is_taken(self):
         def outcome(index):
             if index < 2:
                 return mhjc.MhjcApiError("HTTP 400：user already exists")
-            return "temp_aabbcc"
+            return "enma.davis77"
 
-        result, calls = self._create(outcome, username="wanted")
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(calls[-1], "")
-        self.assertEqual(result["email"], "temp_aabbcc@mhjc.edu.kg")
+        result, calls = self._create(outcome, username="wanted",
+                                     name_generator=lambda: "enma.davis77")
+        self.assertEqual(len(calls), 3, "自定义名 → 加后缀 → 姓名候选")
+        self.assertEqual(calls[2], "enma.davis77")
+        self.assertEqual(result["email"], "enma.davis77@mhjc.edu.kg")
         self.assertEqual(result["usernameFallback"], "wanted")
+
+    def test_explicit_username_still_wins_over_generated_names(self):
+        result, calls = self._create(lambda i: "wanted-name", username="wanted-name",
+                                     name_generator=lambda: "emma.wilson")
+        self.assertEqual(calls, ["wanted-name"])
+        self.assertNotIn("nameFallback", result)
 
     def test_a_real_error_is_not_masked_by_retries(self):
         calls = []

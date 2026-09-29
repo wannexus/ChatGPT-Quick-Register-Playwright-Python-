@@ -125,6 +125,23 @@ class EnvConfigStoreTests(unittest.TestCase):
             local_config.save_config({"duckToken": "abc"})
         self.assertFalse(self.json_path.exists(), "settings must not be written to a JSON file")
 
+    def test_mhjc_name_style_round_trips_through_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            local_config.save_config({"mhjcNameStyle": "provider", "mhjcUsername": "wanted"})
+            self.assertEqual(local_config.effective_config()["mhjcNameStyle"], "provider")
+
+            local_config.save_config({"mhjcNameStyle": "name", "mhjcUsername": "wanted"})
+            cfg = local_config.effective_config()
+
+        self.assertEqual(cfg["mhjcNameStyle"], "name")
+        self.assertEqual(cfg["mhjcUsername"], "wanted")
+        self.assertIn("QR_MHJC_NAME_STYLE", self._env_text())
+
+    def test_default_name_style_is_person_names(self):
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = local_config.effective_config()
+        self.assertEqual(cfg["mhjcNameStyle"], "name")
+
     def test_env_file_is_private(self):
         with patch.dict(os.environ, {}, clear=True):
             local_config.save_config({"duckToken": "abc"})

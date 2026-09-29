@@ -276,7 +276,7 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
             {"id": 9, "email": targets[1]["email"], "pushed": True, "error": ""},
         ])
         with patch.object(register, "_load_codex_push_targets", return_value=targets), \
-             patch.object(register, "_open_browser_context", AsyncMock(return_value=(None, None, None, None))), \
+             patch.object(register, "_open_browser_context", AsyncMock(return_value=(None, None, None, None, None))), \
              patch.object(register, "_close_browser_context", AsyncMock()), \
              patch.object(register, "_proxy_banner", return_value="fixture proxy"), \
              patch.object(register, "_run_one_codex_push", run_one):
