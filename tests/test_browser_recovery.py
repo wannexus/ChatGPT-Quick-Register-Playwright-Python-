@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import register
@@ -39,6 +41,31 @@ THAI_CHALLENGE_PAGE = """<!doctype html>
 DOM_ONLY_CHALLENGE_PAGE = """<!doctype html>
 <html><head><title>รอสักครู่...</title></head>
 <body><div class="cf-turnstile" data-sitekey="x"></div></body></html>
+"""
+
+# 2026-09-29 17:35 真机抓包（output/debug/step3-no-password-or-verify-page-*.html）：
+# 指纹画像轮到韩语后，step3 中间页标题是 "잠시만 기다리십시오…"，正文是
+# 「验证成功，等 auth.openai.com 回包」。旧 step3 只盯 URL，把它当成「找不到密码页」。
+KOREAN_STEP3_CHALLENGE_PAGE = """<!doctype html>
+<html dir="ltr"><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="360">
+<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=a429fe8d496daccf"></script>
+<title>잠시만 기다리십시오…</title>
+<script src="https://challenges.cloudflare.com/turnstile/v0/b/d76008a69eab/api.js?onload=zaERg6&amp;render=explicit" async defer crossorigin="anonymous"></script>
+</head>
+<body>
+<div class="container">
+  <div class="data">
+    <div>auth.openai.com 보안 확인 수행 중</div>
+    <div>이 웹 사이트는 보안 서비스를 사용하여 악의적인 봇으로부터 보호합니다.</div>
+    <div>이 페이지는 웹 사이트에서 사용자가 봇이 아님을 확인하는 동안에만 표시됩니다.</div>
+    <div>확인에 성공했습니다.</div>
+    <div>auth.openai.com 응답을 기다리는 중</div>
+    <div>Enable JavaScript and cookies to continue</div>
+  </div>
+</div>
+</body></html>
 """
 
 NORMAL_PAGE = """<!doctype html>
@@ -274,6 +301,106 @@ class CloudflareWaitTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertTrue(clicked)
         self.assertGreaterEqual(probes["count"], 2)
+
+    async def test_korean_step3_challenge_page_is_detected(self):
+        """韩语标题 + 「验证成功等回包」也必须算挑战，不能当成业务页。"""
+        page = await self._page(KOREAN_STEP3_CHALLENGE_PAGE)
+        self.assertTrue(await flow._detect_cloudflare_challenge(page))
+
+    async def test_wait_advances_turnstile_instead_of_only_sleeping(self):
+        page = await self._page(KOREAN_STEP3_CHALLENGE_PAGE)
+        advances = {"n": 0}
+        detects = {"n": 0}
+
+        async def fake_advance(_page):
+            advances["n"] += 1
+            return False
+
+        async def fake_detect(_page):
+            detects["n"] += 1
+            # 前两次探测是挑战中；推进过一次之后就放行
+            return detects["n"] <= 2
+
+        with patch.object(flow, "save_debug_artifacts", AsyncMock()), \
+             patch.object(flow, "_detect_cloudflare_challenge", side_effect=fake_detect), \
+             patch.object(flow, "_try_advance_cloudflare", side_effect=fake_advance):
+            cleared = await flow._wait_for_cloudflare_clear(
+                page, timeout_seconds=2, allow_manual_cloudflare=True, poll=0.05
+            )
+        self.assertTrue(cleared)
+        self.assertGreaterEqual(advances["n"], 1, "等待期间必须尝试推进 Turnstile，而不是干等")
+
+
+class CloudflareUrlMatchTests(unittest.IsolatedAsyncioTestCase):
+    """挑战页 URL 往往已经命中 success_patterns（auth.openai.com），不能当成功。"""
+
+    async def test_url_match_is_rejected_while_the_challenge_is_showing(self):
+        page = SimpleNamespace(
+            url="https://auth.openai.com/api/accounts/authorize?prompt=login",
+        )
+        with patch.object(flow, "_detect_cloudflare_challenge", AsyncMock(return_value=True)):
+            self.assertFalse(
+                await flow._url_ready(page, [re.compile(r"auth\.openai\.com/", re.I)])
+            )
+        with patch.object(flow, "_detect_cloudflare_challenge", AsyncMock(return_value=False)):
+            self.assertTrue(
+                await flow._url_ready(page, [re.compile(r"auth\.openai\.com/", re.I)])
+            )
+
+    async def test_wait_url_settles_the_challenge_before_accepting_the_url(self):
+        events = []
+
+        class Page:
+            url = "https://auth.openai.com/log-in/password"
+
+            async def wait_for_load_state(self, *_a, **_kw):
+                return None
+
+        page = Page()
+        detects = iter([True, True, False, False])
+
+        async def fake_detect(_p):
+            return next(detects)
+
+        async def fake_wait(_p, **kwargs):
+            events.append(kwargs.get("label"))
+            return True
+
+        with patch.object(flow, "_detect_cloudflare_challenge", side_effect=fake_detect), \
+             patch.object(flow, "_wait_for_cloudflare_clear", side_effect=fake_wait):
+            await flow._wait_url(
+                page,
+                [re.compile(r"/password", re.I)],
+                timeout=2000,
+                allow_manual_cloudflare=True,
+                cloudflare_timeout_seconds=5,
+                label="step 3 等密码/验证码页",
+            )
+        self.assertTrue(events, "遇到挑战必须先等它过去")
+        self.assertIn("step 3 等密码/验证码页-cloudflare", events[0])
+
+
+class Step3CloudflareRegressionTests(unittest.TestCase):
+    """源码契约：step3 / relogin 不能在挑战页上直接超时或直接报错。"""
+
+    def setUp(self):
+        self.source = Path("core/flow.py").read_text(encoding="utf-8")
+
+    def test_step3_settles_cloudflare_before_waiting_for_the_password_url(self):
+        body = self.source[self.source.index("async def step3_password"):]
+        body = body[: body.index("async def _fill_verification_code")]
+        settle_at = body.index("await _settle_cloudflare")
+        wait_at = body.index("await _wait_url")
+        self.assertLess(settle_at, wait_at, "step3 必须先等挑战过去，再等密码页 URL")
+
+    def test_relogin_waits_through_cloudflare_instead_of_raising_immediately(self):
+        body = self.source[self.source.index("async def wait_for_login_step"):]
+        body = body[: body.index("async def wait_for_url_with_recovery")]
+        self.assertIn('if signal == "cloudflare"', body)
+        cf_at = body.index('if signal == "cloudflare"')
+        cf_block = body[cf_at: cf_at + 600]
+        self.assertIn("_wait_for_cloudflare_clear", cf_block)
+        self.assertNotIn("请换 IP 或用有头模式重试", cf_block)
 
 
 class LocalizedHomepageTests(unittest.IsolatedAsyncioTestCase):

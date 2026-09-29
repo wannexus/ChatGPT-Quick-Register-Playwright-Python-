@@ -22,7 +22,7 @@ from __future__ import annotations
 import pathlib
 import unittest
 
-from core import codex_oauth
+from core import codex_oauth, fingerprint
 
 
 CHANNEL_PAGE = """<!doctype html>
@@ -153,6 +153,66 @@ class SmsChannelSelectionTests(unittest.IsolatedAsyncioTestCase):
         }""")
         self.assertEqual(await codex_oauth._select_sms_channel(self.page, wait_ms=300), "failed")
 
+    async def test_normal_channel_picker_is_not_a_delivery_failure(self):
+        await self._open(channel_page(sms_checked=False, text="SMS", lang="sv"))
+        self.assertFalse(await codex_oauth._sms_delivery_unavailable(self.page))
+
+    async def test_disabled_sms_and_selected_whatsapp_signal_delivery_failure(self):
+        await self._open(channel_page(sms_checked=False, text="SMS", lang="sv"))
+        await self.page.locator('input[value="sms"]').evaluate("el => el.disabled = true")
+        self.assertTrue(await codex_oauth._sms_delivery_unavailable(self.page))
+
+    async def test_whatsapp_form_error_is_detected_without_translating_it(self):
+        await self._open(channel_page(sms_checked=True))
+        await self.page.evaluate("""() => {
+            const error = document.createElement('p');
+            error.className = '_error_a1b2_3';
+            error.textContent = 'unknown-language WhatsApp unknown-language';
+            document.querySelector('form').appendChild(error);
+        }""")
+        self.assertTrue(await codex_oauth._sms_delivery_unavailable(self.page))
+
+    async def test_aria_error_message_is_detected_without_error_class_names(self):
+        await self._open(channel_page(sms_checked=True))
+        await self.page.evaluate("""() => {
+            const error = document.createElement('p');
+            error.id = 'phone-delivery-error';
+            error.textContent = 'unknown-language WhatsApp unknown-language';
+            document.querySelector('form').appendChild(error);
+            document.querySelector('input[type="tel"]').setAttribute('aria-errormessage', error.id);
+        }""")
+        self.assertTrue(await codex_oauth._sms_delivery_unavailable(self.page))
+
+    async def test_hidden_whatsapp_error_is_not_a_delivery_failure(self):
+        await self._open(channel_page(sms_checked=True))
+        await self.page.evaluate("""() => {
+            const error = document.createElement('p');
+            error.setAttribute('role', 'alert');
+            error.textContent = 'unknown-language WhatsApp unknown-language';
+            error.hidden = true;
+            document.querySelector('form').appendChild(error);
+        }""")
+        self.assertFalse(await codex_oauth._sms_delivery_unavailable(self.page))
+
+    async def test_sms_fallback_detection_works_in_every_fingerprint_locale(self):
+        for locale in sorted({persona.lang for persona in fingerprint.PERSONAS}):
+            with self.subTest(locale=locale):
+                context = await self.browser.new_context(locale=locale)
+                try:
+                    page = await context.new_page()
+                    await page.set_content(channel_page(sms_checked=False, text="SMS", lang=locale))
+                    self.assertEqual(await page.evaluate("navigator.language"), locale)
+                    self.assertFalse(await codex_oauth._sms_delivery_unavailable(page))
+                    self.assertEqual(await codex_oauth._select_sms_channel(page, wait_ms=0), "sms")
+                    self.assertFalse(await codex_oauth._sms_delivery_unavailable(page, sms_requested=True))
+                    await page.locator('input[value="whatsapp"]').evaluate("el => el.checked = true")
+                    self.assertTrue(await codex_oauth._sms_delivery_unavailable(page, sms_requested=True))
+                    self.assertFalse(await codex_oauth._sms_delivery_unavailable(page))
+                    await page.locator('input[value="sms"]').evaluate("el => el.disabled = true")
+                    self.assertTrue(await codex_oauth._sms_delivery_unavailable(page))
+                finally:
+                    await context.close()
+
 
 class SmsChannelContractTests(unittest.TestCase):
     """流程上必须在提交前选短信；选不成必须停，不能傻等短信超时。"""
@@ -200,6 +260,8 @@ class SmsChannelContractTests(unittest.TestCase):
         for text in (
             "We couldn't send a text message to this phone number, so we switched to WhatsApp.",
             "We could not send a text message to this phone number.\nWe switched to WhatsApp.",
+            "Vi kunde inte skicka ett sms till det här telefonnumret, så vi bytte till WhatsApp. "
+            "Fortsätt för att skicka en verifieringskod på WhatsApp.",
         ):
             self.assertIsNotNone(codex_oauth._WHATSAPP_SMS_FAILURE_RE.search(text))
         self.assertIsNone(codex_oauth._WHATSAPP_SMS_FAILURE_RE.search("Text message WhatsApp Continue"))

@@ -725,8 +725,10 @@ _WHATSAPP_DELIVERY_RE = re.compile(
 )
 
 _WHATSAPP_SMS_FAILURE_RE = re.compile(
-    r"(?:couldn['\u2019]t|could not|can['\u2019]t|cannot|unable to)\s+send\s+"
-    r"(?:a\s+|the\s+)?(?:text message|sms)\b[\s\S]{0,200}?\bwhatsapp\b",
+    r"(?:(?:couldn['\u2019]t|could not|can['\u2019]t|cannot|unable to)\s+send\s+"
+    r"(?:a\s+|the\s+)?(?:text message|sms)\b"
+    r"|kunde\s+inte\s+skicka\s+(?:ett\s+)?sms\b)"
+    r"[\s\S]{0,200}?\bwhatsapp\b",
     re.IGNORECASE,
 )
 
@@ -1170,6 +1172,45 @@ async def _channel_is_sms(page, index: int) -> bool:
         return False
 
 
+async def _sms_delivery_unavailable(page, *, sms_requested: bool = False) -> bool:
+    try:
+        state = await page.evaluate("""() => {
+            const form = document.querySelector("form[action*='/add-phone' i]");
+            if (!form) return null;
+            const visible = el => el && el.getClientRects().length > 0 &&
+                getComputedStyle(el).visibility !== 'hidden';
+            const radios = [...form.querySelectorAll("input[type='radio']")];
+            const whatsapp = radios.find(el => /whats[_-]?app/i.test(el.value));
+            const sms = radios.find(el => /^(sms|text|text[_-]?message)$/i.test(el.value));
+            const errors = new Set(form.querySelectorAll(
+                '[role="alert"], [slot="errorMessage"], [data-error], ' +
+                '[data-testid*="error" i], [class*="error" i]'
+            ));
+            for (const el of form.querySelectorAll('[aria-errormessage], [aria-invalid="true"][aria-describedby]')) {
+                const ids = el.getAttribute('aria-errormessage') || el.getAttribute('aria-describedby') || '';
+                for (const id of ids.split(/\\s+/)) {
+                    const error = document.getElementById(id);
+                    if (error) errors.add(error);
+                }
+            }
+            return {
+                whatsappSelected: Boolean(whatsapp && whatsapp.checked),
+                smsDisabled: Boolean(sms && (sms.matches(':disabled') ||
+                    sms.getAttribute('aria-disabled') === 'true' ||
+                    sms.closest('[aria-disabled="true"], [data-disabled]:not([data-disabled="false"])'))),
+                errorTexts: [...errors].filter(visible).map(el => el.innerText || '')
+            };
+        }""")
+    except Exception:
+        state = None
+    # 表单错误和禁用状态不会随页面语言变化；普通渠道选项不属于错误。
+    if isinstance(state, dict):
+        if (state.get("whatsappSelected") and (sms_requested or state.get("smsDisabled"))
+                or any("whatsapp" in str(text).lower() for text in state.get("errorTexts", []))):
+            return True
+    return bool(_WHATSAPP_SMS_FAILURE_RE.search(str(await _auth_page_text(page) or "")))
+
+
 async def _select_phone_country(page, country: str, phone: str) -> bool:
     """在 add-phone 页选中与号码实际区号一致的国家。
 
@@ -1566,12 +1607,8 @@ def create_5sim_phone_verifier(
         finally:
             await loop.run_in_executor(None, slot.__exit__, None, None, None)
 
-    async def reject_sms_unavailable(page):
-        try:
-            page_text = str(await _auth_page_text(page) or "")
-        except Exception:
-            return
-        if _WHATSAPP_SMS_FAILURE_RE.search(page_text):
+    async def reject_sms_unavailable(page, *, sms_requested=False):
+        if await _sms_delivery_unavailable(page, sms_requested=sms_requested):
             raise _FiveSimSmsDeliveryError("页面无法向此号码发送短信，已自动切换到 WhatsApp")
 
     async def submit_order(page, order, bind_verified_phone):
@@ -1696,10 +1733,11 @@ def create_5sim_phone_verifier(
             await _save_debug(page, "codex-oauth-add-phone-no-submit")
             raise RuntimeError("找不到「发送验证码」按钮")
 
-        await reject_sms_unavailable(page)
+        sms_requested = channel == "sms"
+        await reject_sms_unavailable(page, sms_requested=sms_requested)
         # 提交后再复核一次：有的变体提交后才渲染接收方式（若此时被改成 WhatsApp，立刻停）
         post_channel = await _select_sms_channel(page, wait_ms=1200)
-        await reject_sms_unavailable(page)
+        await reject_sms_unavailable(page, sms_requested=sms_requested)
         if post_channel == "failed":
             await _save_debug(page, "codex-oauth-add-phone-channel-not-sms-after-submit")
             raise RuntimeError(
@@ -1725,7 +1763,7 @@ def create_5sim_phone_verifier(
         deadline = loop.time() + poll_timeout
         sms_code = None
         while loop.time() < deadline:
-            await reject_sms_unavailable(page)
+            await reject_sms_unavailable(page, sms_requested=sms_requested)
             try:
                 order = await run_5sim(
                     lambda call_proxy, call_proxy_insecure: num5sim.check_order(
@@ -1767,7 +1805,7 @@ def create_5sim_phone_verifier(
             raise RuntimeError(f"5sim 等待 SMS 超时（{poll_timeout}s），订单 {order_id} 已取消")
 
         # ── 5) 填写 OTP ──
-        await reject_sms_unavailable(page)
+        await reject_sms_unavailable(page, sms_requested=sms_requested)
         if not await _fill_otp_code(page, sms_code):
             raise RuntimeError("填写手机验证码 OTP 失败")
 
@@ -1901,6 +1939,8 @@ async def run_codex_oauth(
     proxy: Optional[str] = None,
     proxy_insecure: bool = False,
     timeout: float = 180.0,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = 180.0,
 ) -> Dict[str, Any]:
     """跑一次 codex OAuth，自动应对 log-in / email-verification / choose-an-account / consent 中间页。
 
@@ -1909,6 +1949,7 @@ async def run_codex_oauth(
     """
     if fetch_code is None:
         raise ValueError("run_codex_oauth 需要 fetch_code（与 step4 的 OTP 拿码 callable 一样）")
+    from core import flow
 
     verifier, challenge = make_pkce()
     state = secrets.token_urlsafe(16)
@@ -1967,6 +2008,7 @@ async def run_codex_oauth(
         last_login_url = ""
         consent_clicks = 0
         authorize_restarts = 0
+        cloudflare_remaining = max(0.0, float(cloudflare_timeout_seconds))
 
         while loop.time() < deadline:
             try:
@@ -1984,6 +2026,21 @@ async def run_codex_oauth(
             if "error=" in cur and "/oauth/" in cur:
                 await _save_debug(page, "codex-oauth-error-page")
                 raise RuntimeError(f"OpenAI OAuth 错误页：{cur}")
+
+            if await flow._detect_cloudflare_challenge(page):
+                started = loop.time()
+                cleared = await flow._wait_for_cloudflare_clear(
+                    page, timeout_seconds=cloudflare_remaining,
+                    allow_manual_cloudflare=allow_manual_cloudflare,
+                    label="codex-oauth-cloudflare",
+                )
+                elapsed = loop.time() - started
+                cloudflare_remaining = max(0.0, cloudflare_remaining - elapsed)
+                if not cleared:
+                    raise RuntimeError("Codex OAuth 的 Cloudflare 验证等待超时；请先在浏览器完成验证后再重试")
+                deadline += elapsed
+                last_action_at = loop.time()
+                continue
 
             if await _is_add_phone_page(page):
                 await _save_debug(page, "codex-oauth-add-phone")

@@ -166,6 +166,15 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(build.call_args.kwargs["account_id"], 7)
         self.assertIs(build.call_args.kwargs["account_store"], store)
 
+    async def test_oauth_receives_the_configured_cloudflare_wait_budget(self):
+        for headless in (False, True):
+            with self.subTest(headless=headless):
+                oauth = AsyncMock(return_value=FRESH_CODEX)
+                await self._run(store=StubStore(_account()), oauth=oauth,
+                                args=_args(headless=headless, cloudflare_timeout=42))
+                self.assertEqual(oauth.call_args.kwargs["cloudflare_timeout_seconds"], 42)
+                self.assertEqual(oauth.call_args.kwargs["allow_manual_cloudflare"], not headless)
+
     async def test_failed_oauth_never_saves_new_state_and_never_pushes(self):
         store = StubStore(_account())
         oauth = AsyncMock(side_effect=RuntimeError("oauth denied"))

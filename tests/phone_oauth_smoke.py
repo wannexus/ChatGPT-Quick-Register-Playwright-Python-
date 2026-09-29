@@ -15,13 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.async_api import async_playwright
 
 from core import codex_oauth, num5sim
-from test_fivesim_oauth import BindingStore, PHONE, SMS_FAILURE, order
+from test_fivesim_oauth import BindingStore, PHONE, SMS_FAILURE_SV, order
 
 
 async def main():
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(channel="chrome", headless=True)
-        page = await browser.new_page()
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page(locale="ja-JP")
         accepted = True
         reject_phone = False
 
@@ -31,15 +31,19 @@ async def main():
                 html = """<h1>Add a phone</h1><form action='/add-phone'>
                   <select name='country'><option value='US'>United States +1</option></select>
                   <input type='tel'><input type='hidden' name='phoneNumber'>
+                  <label><input type='radio' name='channel' value='whatsapp' checked>WhatsApp</label>
+                  <label><input type='radio' name='channel' value='sms'>SMS</label>
                   <button type='submit'>Send code</button><p role='alert'></p></form>
                   <script>document.querySelector('form').onsubmit=e=>{
                     e.preventDefault();
                     if (REJECT_BAD_NUMBER && document.querySelector('input[type=tel]').value==='5550000001') {
+                      document.querySelector('input[value=whatsapp]').checked=true;
+                      document.querySelector('input[value=sms]').disabled=true;
                       document.querySelector('[role=alert]').textContent=SMS_FAILURE_MESSAGE;return;
                     }
                     location.href='/phone-verification';};</script>"""
                 html = html.replace("REJECT_BAD_NUMBER", "true" if reject_phone else "false")
-                html = html.replace("SMS_FAILURE_MESSAGE", json.dumps(SMS_FAILURE))
+                html = html.replace("SMS_FAILURE_MESSAGE", json.dumps(SMS_FAILURE_SV))
             elif path == "/phone-verification":
                 next_page = "location.href='/consent';" if accepted else "document.querySelector('p').textContent='Invalid code';"
                 html = """<h1>Verify your phone</h1><form action='/phone-verification'>
@@ -103,7 +107,7 @@ async def main():
                     assert [entry.phone for entry in replacement_pool.entries] == [good_phone]
             assert PHONE not in output.getvalue()
             assert "654321" not in output.getvalue()
-            print("Phone browser fixtures OK: OTP acceptance, rejection, WhatsApp fallback bans and replaces, logs masked")
+            print("Phone browser fixtures OK: OTP acceptance, rejection, WhatsApp fallback bans and replaces, logs masked", flush=True)
         finally:
             await browser.close()
 

@@ -1046,17 +1046,35 @@ async def _run_one_account(
         print(f"[{label}] auth-mode={args.auth_mode}; credential omitted")
 
         # 5) 6 步流程
-        await flow.step1_open(page)
+        _cf_allow = not args.headless
+        _cf_timeout = max(0.0, float(getattr(args, "cloudflare_timeout", 180) or 0))
+        await flow.step1_open(
+            page,
+            allow_manual_cloudflare=_cf_allow,
+            cloudflare_timeout_seconds=_cf_timeout,
+        )
         await flow.step2_signup_email(
             page,
             email,
-            allow_manual_cloudflare=not args.headless,
-            cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 120) or 0)),
+            allow_manual_cloudflare=_cf_allow,
+            cloudflare_timeout_seconds=_cf_timeout,
         )
-        actual_password = await flow.step3_password(page, email, password, auth_mode=args.auth_mode)
+        actual_password = await flow.step3_password(
+            page,
+            email,
+            password,
+            auth_mode=args.auth_mode,
+            allow_manual_cloudflare=_cf_allow,
+            cloudflare_timeout_seconds=_cf_timeout,
+        )
 
         fetch_code = make_code_fetcher(args, since_ts=since_ts)
-        code = await flow.step4_code(page, fetch_code)
+        code = await flow.step4_code(
+            page,
+            fetch_code,
+            allow_manual_cloudflare=_cf_allow,
+            cloudflare_timeout_seconds=_cf_timeout,
+        )
 
         # 复用第 2 步定下的同一份姓名档案：邮箱名与账号姓名保持一致
         await flow.step5_profile(page, first_name=first_name, last_name=last_name, birthday=birthday)
@@ -1116,6 +1134,8 @@ async def _run_one_account(
                     proxy=args.proxy or None,
                     proxy_insecure=args.proxy_insecure,
                     timeout=300.0,
+                    allow_manual_cloudflare=not getattr(args, "headless", False),
+                    cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180))),
                 )
                 print(f"[{label}] [codex-oauth] OK  plan={codex_creds.get('plan_type')}  "
                       f"refresh_token={'yes' if codex_creds.get('refresh_token') else 'NO'}")
@@ -1190,6 +1210,8 @@ async def _run_one_relogin(
                 auth_mode=auth_mode,
                 fetch_code=fetch_code,
                 total_timeout_seconds=max(45, min(args.relogin_timeout, 180)),
+                allow_manual_cloudflare=not getattr(args, "headless", False),
+                cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180) or 0)),
             ),
             timeout=max(60, args.relogin_timeout),
         )
@@ -1216,6 +1238,8 @@ async def _run_one_relogin(
                     proxy=args.proxy or None,
                     proxy_insecure=args.proxy_insecure,
                     timeout=300.0,
+                    allow_manual_cloudflare=not getattr(args, "headless", False),
+                    cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180))),
                 )
                 print(f"[{label}] [codex-oauth] OK  refresh_token={'yes' if codex_creds.get('refresh_token') else 'NO'}")
             except Exception as e:  # noqa: BLE001
@@ -1796,6 +1820,8 @@ async def _run_one_codex_push(
                 auth_mode=auth_mode,
                 fetch_code=fetch_code,
                 total_timeout_seconds=max(45, min(args.relogin_timeout, 180)),
+                allow_manual_cloudflare=not getattr(args, "headless", False),
+                cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180) or 0)),
             ),
             timeout=max(60, args.relogin_timeout),
         )
@@ -1820,6 +1846,8 @@ async def _run_one_codex_push(
             proxy=args.proxy or None,
             proxy_insecure=args.proxy_insecure,
             timeout=300.0,
+            allow_manual_cloudflare=not getattr(args, "headless", False),
+            cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180))),
         )
         if not str((codex_creds or {}).get("access_token") or ""):
             raise RuntimeError("codex OAuth 未返回 access_token，拒绝使用旧凭据")

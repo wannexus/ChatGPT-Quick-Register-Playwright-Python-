@@ -76,6 +76,8 @@ playwright install chromium     # 装一次 Chromium
   原订单过期或已结束时才尝试重新购买号码；明确无法复用时改购新号。
 - 如果页面提示无法发送短信并已切换 WhatsApp（如 “We couldn't send a text message…”），
   立即调用 5sim BAN、移除池中号码，重新购买新号继续当前账号；不会继续等待短信。
+  主要检查渠道状态和表单错误：请求短信后被切换到 WhatsApp、SMS 被禁用且 WhatsApp 已选中，
+  或表单内出现 WhatsApp 错误提示时直接换号，不依赖页面语言。英文/瑞典语文案匹配保留作兜底。
   换号共用本次购买次数上限。BAN 未确认时会记录日志并排除此号码，已有账号绑定保留。
 - MySQL 的账号和号码 advisory locks 覆盖号码选择至 OTP 保存，防止并发任务占用第四个名额。
   等待短信时不持有账号行锁；提交绑定时才锁定当前行。需要支持多个命名锁的 MySQL 5.7+。
@@ -222,16 +224,28 @@ WebGL 厂商/渲染器，并对 `getImageData`、`getClientRects` 加确定性�
 
 ### Cloudflare 挑战页与「窗口被关掉」的自愈
 
-首页（chatgpt.com）在这台机器+当前代理上会先返回 Cloudflare 托管挑战页，实测 30~115s 才
-自动放行。挑战页**没有任何 Sign up 按钮**，而且标题会按浏览器语言本地化
-（泰语 `รอสักครู่...`、英文 `Just a moment...`），所以判定不靠英文文案：同时看
-`cf_chl_opt` / `/cdn-cgi/challenge-platform/` 等 HTML 令牌、`#challenge-running` /
-`div.cf-turnstile` 等 DOM 结构。
+- 清理账号状态时保留当前浏览器中的 `cf_clearance` / `__cf_bm` / `_cfuvid`，账号登录 cookie 仍会删除。
+  localStorage/sessionStorage 在浏览器本地清理，不再访问 3 个 `/blank-clear` 页面。
+- Codex OAuth 识别挑战后暂停表单操作，等待正常验证完成；等待期间不重开授权页、提交邮箱或购买号码。
+  注册和 OAuth 都使用 `--cloudflare-timeout` 的等待预算；无头模式遇到挑战直接报出原因。
+
+首页（chatgpt.com）和 `auth.openai.com` 在这台机器+当前代理上会返回 Cloudflare 托管挑战页，
+实测 30~115s 才自动放行。挑战页**没有任何 Sign up / 密码输入框**，而且标题会按浏览器语言本地化
+（泰语 `รอสักครู่...`、韩语 `잠시만 기다리십시오…`、英文 `Just a moment...`），所以判定不靠英文文案：
+同时看 `cf_chl_opt` / `/cdn-cgi/challenge-platform/` 等 HTML 令牌、`#challenge-running` /
+`div.cf-turnstile` 等 DOM 结构，以及多语言标题/「验证成功，等待站点响应」类正文。
 
 - 挑战出现时会打印「检测到 Cloudflare 托管挑战…请勿关闭该窗口」，并在
   `_wait_for_cloudflare_clear` 里等它过去，**不再把挑战页当成「找不到 Sign up 按钮」**。
   等待预算由 `--cloudflare-timeout`（`.env`：`QR_CLOUDFLARE_TIMEOUT`，默认 180s，实测 30~115s 放行）控制；
   手动在窗口里点验证也可以，通过后自动继续。
+- **等待期间会自动推进**：每几秒在 Turnstile 里点一次复选框 / 「我不是机器人」类按钮（只点击、
+  不逆向求解）；托管挑战多数会自己放行，交互式 Turnstile 需要这一下点击才会继续。
+  挑战停留超过约 25s 且点过验证仍未放行时，会刷新一次页面让挑战重新跑（避免 meta refresh 要等 360s）。
+- **step3 / relogin / 邮箱提交后的等待全部认挑战**：挑战页 URL 往往已经是 `auth.openai.com/...`
+  ，旧逻辑会误当成「已到密码页」然后超时（2026-09-29 真机 debug 里的韩语挑战页就是这么丢的）。
+  现在 `step1`–`step4`、`wait_for_login_step`、`wait_for_url_with_recovery` 都会先等挑战过去，
+  再认目标 URL / 表单；挑战等待不占用业务步骤自己的超时预算。
 - 万一窗口被关掉 / Chrome 崩溃（Playwright 只会抛
   `TargetClosedError: Target page, context or browser has been closed`，看不出原因），现在会：
   1) `_BrowserWatchdog` 在页面/上下文关闭或崩溃的当下就打印带时间戳的告警；
@@ -244,6 +258,9 @@ WebGL 厂商/渲染器，并对 `getImageData`、`getClientRects` 加确定性�
   文案表覆盖了画像用到的语言；若遇到没收录的语言，只要首页已渲染
   （有指向 `/auth/login` 的链接就算渲染完成，href 与语言无关），就**立刻**改用
   `?screen_hint=signup` 的 auth URL，不再白等 25s。
+- **频繁被挑战时先看出口 IP**：同一 IP 连续注册多个账号时 Cloudflare 会提高命中率。
+  换代理节点（`--proxy` / `QR_PROXY_*`）通常比加大等待更有效；`cf_clearance` 会在本浏览器
+  内复用，但不会跨浏览器 profile 持久化。
 
 启动前最好把环境变量设好（凭据不会写到任何配置文件）：
 ```bash

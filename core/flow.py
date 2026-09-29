@@ -49,6 +49,7 @@ OPENAI_STORAGE_ORIGINS = (
     "https://chat.openai.com",
     "https://auth.openai.com",
 )
+CLOUDFLARE_COOKIE_NAMES = frozenset({"cf_clearance", "__cf_bm", "_cfuvid"})
 DEBUG_DIR = Path(__file__).resolve().parent.parent / "output" / "debug"
 
 
@@ -168,11 +169,60 @@ CLOUDFLARE_DOM_PROBE_JS = """
   }
 }
 """
+# 托管挑战 <title> 会随 Accept-Language / 浏览器语言本地化。2026-09-29 实测：
+# 指纹画像轮换到韩语后，step3 中间页标题是 "잠시만 기다리십시오…"，正文是
+# "확인에 성공했습니다. auth.openai.com 응답을 기다리는 중"（验证成功，等 origin 回包），
+# 仍然属于挑战未完成，不能当成密码页/验证码页。
+CLOUDFLARE_TITLE_PATTERNS = (
+    re.compile(r"just a moment", re.IGNORECASE),
+    re.compile(r"attention required", re.IGNORECASE),
+    re.compile(r"performing security verification", re.IGNORECASE),
+    re.compile(r"잠시만\s*기다", re.IGNORECASE),          # ko
+    re.compile(r"รอสักครู่", re.IGNORECASE),              # th
+    re.compile(r"しばらくお待ち", re.IGNORECASE),           # ja
+    re.compile(r"请稍候|请稍等|正在进行安全检查", re.IGNORECASE),  # zh
+    re.compile(r"un momento|solo un momento", re.IGNORECASE),  # es
+    re.compile(r"un instant|veuillez patienter", re.IGNORECASE),  # fr
+    re.compile(r"einen moment|bitte warten", re.IGNORECASE),  # de
+    re.compile(r"só um momento|aguarde um momento|um momento", re.IGNORECASE),  # pt
+    re.compile(r"одну минуту|подождите", re.IGNORECASE),  # ru
+    re.compile(r"un momento|attendi", re.IGNORECASE),  # it
+    re.compile(r"even geduld|een moment", re.IGNORECASE),  # nl
+    re.compile(r"chwileczkę|moment", re.IGNORECASE),  # pl — 只看 title，误伤面小
+    re.compile(r"bir dakika|lütfen bekleyin", re.IGNORECASE),  # tr
+    re.compile(r"sebentar", re.IGNORECASE),  # id
+    re.compile(r"chờ một chút", re.IGNORECASE),  # vi
+)
 CLOUDFLARE_TEXT_PATTERNS = (
     re.compile(r"just a moment", re.IGNORECASE),
     re.compile(r"enable javascript and cookies to continue", re.IGNORECASE),
     re.compile(r"verification successful\.?\s*waiting", re.IGNORECASE),
+    re.compile(r"waiting for (the )?(site|origin|auth)", re.IGNORECASE),
+    re.compile(r"performing security verification", re.IGNORECASE),
+    re.compile(r"확인에 성공했습니다", re.IGNORECASE),
+    re.compile(r"응답을 기다리는 중", re.IGNORECASE),
+    re.compile(r"보안 확인", re.IGNORECASE),
     re.compile(r"turnstile", re.IGNORECASE),
+)
+# Turnstile 交互控件（托管挑战里的复选框 / 「我不是机器人」类按钮）。
+# 只做用户可见的点击，不做逆向求解；点不动就继续等托管挑战自动放行。
+_TURNSTILE_FRAME_URL_HINTS = ("challenges.cloudflare.com", "challenges.cloudflareusercontent.com")
+_TURNSTILE_CLICK_SELECTORS = (
+    'input[type="checkbox"]',
+    '[role="checkbox"]',
+    'label',
+    '#challenge-stage button',
+    'button[type="submit"]',
+    'a[role="button"]',
+)
+_TURNSTILE_CLICK_TEXTS = (
+    "verify you are human", "i am human", "i'm human", "human",
+    "confirm you are human", "click to verify",
+    "我不是机器人", "验证您是真人", "我是真人", "确认您是真人",
+    "인간입니다", "사람입니다", "로봇이 아닙니다",
+    "sou humano", "je suis humain", "ich bin ein mensch",
+    "soy humano", "sono umano", "ik ben een mensch",
+    "jag är människa", "minä olen ihminen",
 )
 COMPLETE_TEXTS = [
     "agree", "同意", "完成", "continue", "继续", "create account", "完成帐户创建", "创建账号",
@@ -404,8 +454,8 @@ async def _detect_cloudflare_challenge(page: Page) -> bool:
     except Exception:
         pass
     try:
-        title = (await page.title()).strip().lower()
-        if title in {"just a moment...", "just a moment", "attention required! | cloudflare"}:
+        title = (await page.title()).strip()
+        if any(pattern.search(title) for pattern in CLOUDFLARE_TITLE_PATTERNS):
             return True
     except Exception:
         pass
@@ -416,7 +466,10 @@ async def _detect_cloudflare_challenge(page: Page) -> bool:
     if any(marker.lower() in html for marker in CLOUDFLARE_CHALLENGE_MARKERS):
         return True
     try:
-        if await page.evaluate(CLOUDFLARE_DOM_PROBE_JS):
+        probe = await page.evaluate(CLOUDFLARE_DOM_PROBE_JS)
+        # 只认严格 True：有的 Page 测试替身 / CDP 回包会给别的真值，
+        # 不能把非布尔真值当成「页面上有挑战容器」。
+        if probe is True:
             return True
     except Exception:
         pass
@@ -425,6 +478,84 @@ async def _detect_cloudflare_challenge(page: Page) -> bool:
     except Exception:
         body = ""
     return any(pattern.search(body) for pattern in CLOUDFLARE_TEXT_PATTERNS)
+
+
+async def _try_advance_cloudflare(page: Page) -> bool:
+    """在挑战页上做一次用户可见的推进：点 Turnstile 复选框 / 「我不是机器人」。
+
+    只点击、不求解。托管挑战（managed）多数会自己放行；交互式 Turnstile 需要
+    这一下点击才会继续。点不到就返回 False，调用方继续等。
+    """
+    clicked = False
+
+    async def _click_locator(loc, kind: str) -> bool:
+        try:
+            if not await loc.count():
+                return False
+            target = loc.first
+            if not await target.is_visible():
+                return False
+            await target.click(timeout=1500, force=True)
+            print(f"[cloudflare] 已点击挑战控件（{kind}）")
+            return True
+        except Exception:
+            return False
+
+    frames = []
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = [page.main_frame] if getattr(page, "main_frame", None) else []
+
+    for frame in frames:
+        try:
+            frame_url = (frame.url or "").lower()
+        except Exception:
+            frame_url = ""
+        is_cf_frame = any(hint in frame_url for hint in _TURNSTILE_FRAME_URL_HINTS)
+        for selector in _TURNSTILE_CLICK_SELECTORS:
+            kind = f"frame:{selector}" if is_cf_frame else selector
+            # 只在 CF 相关 frame 里盲点 checkbox/label，避免误点业务按钮
+            if not is_cf_frame and selector in ('input[type="checkbox"]', '[role="checkbox"]', "label"):
+                continue
+            if await _click_locator(frame.locator(selector), kind):
+                clicked = True
+                break
+        if clicked:
+            break
+        if is_cf_frame:
+            for text in _TURNSTILE_CLICK_TEXTS:
+                for selector in ("button", "[role=button]", "input[type=submit]", "label", "a"):
+                    try:
+                        loc = frame.locator(selector).filter(
+                            has_text=re.compile(re.escape(text), re.IGNORECASE)
+                        )
+                    except Exception:
+                        continue
+                    if await _click_locator(loc, f"frame-text:{text}"):
+                        clicked = True
+                        break
+                if clicked:
+                    break
+        if clicked:
+            break
+
+    if not clicked:
+        # 主文档上的多语言「验证您是人类」类按钮（不含 checkbox，避免误伤）
+        for text in _TURNSTILE_CLICK_TEXTS:
+            for selector in ("button", "[role=button]", "input[type=submit]", "a"):
+                try:
+                    loc = page.locator(selector).filter(
+                        has_text=re.compile(re.escape(text), re.IGNORECASE)
+                    )
+                except Exception:
+                    continue
+                if await _click_locator(loc, f"text:{text}"):
+                    clicked = True
+                    break
+            if clicked:
+                break
+    return clicked
 
 
 async def _wait_for_cloudflare_clear(
@@ -440,6 +571,9 @@ async def _wait_for_cloudflare_clear(
     Returns True once the challenge is no longer detected, False on timeout.
     Raises :class:`HeadlessBlockedError` in headless mode (nothing can solve the
     challenge there) or when the page/browser goes away while waiting.
+
+    等待期间每几秒做一次用户可见的推进（点 Turnstile 复选框），托管挑战多数
+    会自己放行；长时间不动时只刷新一次页面，避免 meta refresh 要等 360s。
     """
     loop = asyncio.get_event_loop()
     if not await _detect_cloudflare_challenge(page):
@@ -448,10 +582,14 @@ async def _wait_for_cloudflare_clear(
         await _raise_if_cloudflare_challenge(page, label=f"{label}-challenge")
     deadline = loop.time() + timeout_seconds
     last_notice = 0.0
+    last_advance = 0.0
+    advanced = 0
+    reloaded = 0
     await save_debug_artifacts(page, f"{label}-challenge")
     print(
-        "[cloudflare] 检测到 Cloudflare 托管挑战（页面标题可能被本地化，例如 'รอสักครู่...'）："
-        f"浏览器窗口会先停在验证页，通常 30s 左右自动放行；如超过 60s 可在窗口里手动点一下验证，"
+        "[cloudflare] 检测到 Cloudflare 托管挑战（标题会随浏览器语言变化，"
+        "例如 'Just a moment...' / '잠시만 기다리십시오…' / 'รอสักครู่...'）："
+        f"会自动点一次验证控件并等待放行，通常 30s 左右；如超过 60s 可在窗口里手动点一下验证，"
         f"最多等待 {int(timeout_seconds)}s（请勿关闭该窗口）"
     )
     while loop.time() < deadline:
@@ -459,6 +597,20 @@ async def _wait_for_cloudflare_clear(
             print("[cloudflare] 验证已通过，继续注册流程")
             return True
         now = loop.time()
+        if now - last_advance >= 4.0:
+            if await _try_advance_cloudflare(page):
+                advanced += 1
+            last_advance = now
+        # 挑战页卡住（验证控件点了也没放行）时刷新一次，让托管挑战重新跑
+        remaining = deadline - now
+        if reloaded < 1 and advanced >= 2 and remaining > 20 and (timeout_seconds - remaining) > 25:
+            print("[cloudflare] 挑战停留较久，刷新页面让验证重新跑一次")
+            reloaded += 1
+            try:
+                await page.reload(wait_until="commit", timeout=20000)
+            except Exception as e:  # noqa: BLE001
+                print(f"[cloudflare] 刷新失败（继续等）：{e}")
+            last_advance = 0.0
         if now - last_notice >= 15:
             print(f"[cloudflare] 等待验证通过... 剩余 {max(0, int(deadline - now))}s（不要关闭浏览器窗口）")
             last_notice = now
@@ -585,6 +737,8 @@ async def wait_for_login_step(
     accept: tuple = ("password", "code", "logged_in"),
     total_timeout_seconds: float = 45,
     label: str = "relogin",
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
 ) -> str:
     """Wait until the login page reaches one of the accepted steps.
 
@@ -610,7 +764,20 @@ async def wait_for_login_step(
                 + (f"（页面提示：{hit.group(0)!r}）" if hit else "")
             )
         if signal == "cloudflare":
-            raise RuntimeError(f"{label}：被 Cloudflare/Turnstile 拦截，请换 IP 或用有头模式重试")
+            # 挑战页在 relogin 路径上很常见（auth.openai.com 中间跳转时）。先等它
+            # 放行，而不是直接判失败 —— 2026-09-29 韩语标题挑战页让整轮登录作废。
+            cleared = await _wait_for_cloudflare_clear(
+                page,
+                timeout_seconds=cloudflare_timeout_seconds,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                label=f"{label or 'login'}-cloudflare",
+            )
+            if not cleared:
+                raise RuntimeError(
+                    f"{label}：Cloudflare/Turnstile 验证未通过；"
+                    "有头模式可在窗口里手动点一下验证后重试，频繁出现请更换代理出口 IP"
+                )
+            continue
         if signal == "rate_limited":
             # transient: click 重试 when the page offers it, then keep waiting
             with contextlib.suppress(Exception):
@@ -631,17 +798,33 @@ async def wait_for_url_with_recovery(
     refill_password: str | None = None,
     label: str = "",
     max_retries: int = 3,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
 ) -> None:
     """Poll until page.url matches any of `success_patterns`. Auto-click 重试
     on soft error pages (Operation timed out / Route Error / 405). On hard
     blocks (max_check_attempts / user_already_exists) raise immediately. If
     `refill_password` is provided and we land back on the password page, refill
-    and resubmit it."""
+    and resubmit it.
+
+    Cloudflare 挑战页的 URL 可能已经命中 success_patterns（auth.openai.com），
+    所以这里先等挑战过去，再把 URL 当成功。"""
     deadline = asyncio.get_event_loop().time() + total_timeout_seconds
     retry_count = 0
     same_state_streak = 0  # 连续多少轮卡在「重试后还在错误页」
 
     while asyncio.get_event_loop().time() < deadline:
+        if await _detect_cloudflare_challenge(page):
+            if not await _wait_for_cloudflare_clear(
+                page,
+                timeout_seconds=cloudflare_timeout_seconds,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                label=f"{label or 'recover'}-cloudflare",
+            ):
+                raise TimeoutError(f"{label or 'recover'} 等待 Cloudflare 挑战超时")
+            deadline = max(deadline, asyncio.get_event_loop().time() + 15)
+            continue
+
         url = page.url
         if any(p.search(url) for p in success_patterns):
             return
@@ -818,9 +1001,68 @@ async def _submit_email_form(page: Page, email_input, email: str) -> None:
     await asyncio.sleep(2.0)
 
 
-async def _wait_url(page: Page, patterns: list[re.Pattern], *, timeout: int = 30000):
-    deadline = asyncio.get_event_loop().time() + timeout / 1000
-    while asyncio.get_event_loop().time() < deadline:
+async def _url_ready(page: Page, patterns: list[re.Pattern]) -> bool:
+    """URL 命中目标，且当前页不是 Cloudflare 挑战页。
+
+    挑战页的 URL 往往已经是 auth.openai.com/...，会误命中 success_patterns
+    （2026-09-29 step3 就是这样把韩语挑战页当成「已到密码页」）。
+    """
+    try:
+        if await _detect_cloudflare_challenge(page):
+            return False
+    except Exception:
+        pass
+    url = page.url
+    return any(p.search(url) for p in patterns)
+
+
+async def _settle_cloudflare(
+    page: Page,
+    *,
+    allow_manual_cloudflare: bool,
+    cloudflare_timeout_seconds: float,
+    label: str,
+) -> bool:
+    """若当前是挑战页就等它过去；干净页面直接返回 True。"""
+    if not await _detect_cloudflare_challenge(page):
+        return True
+    return await _wait_for_cloudflare_clear(
+        page,
+        timeout_seconds=cloudflare_timeout_seconds,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        label=label,
+    )
+
+
+async def _wait_url(
+    page: Page,
+    patterns: list[re.Pattern],
+    *,
+    timeout: int = 30000,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+    label: str = "",
+):
+    """等 URL 命中 patterns；中途被 Cloudflare 拦住时先等挑战过去。
+
+    挑战页 URL 可能已经匹配 patterns（auth.openai.com），所以必须先排除挑战
+    再认成功。挑战等待不占用 `timeout` 预算，用单独的 cloudflare_timeout。
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout / 1000
+    wait_label = label or "wait-url"
+    while loop.time() < deadline:
+        if await _detect_cloudflare_challenge(page):
+            if not await _wait_for_cloudflare_clear(
+                page,
+                timeout_seconds=cloudflare_timeout_seconds,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                label=f"{wait_label}-cloudflare",
+            ):
+                raise TimeoutError(f"{wait_label} 等待 Cloudflare 挑战超时（当前：{page.url}）")
+            # 挑战放行后再给真实页面一点时间落到目标 URL
+            deadline = max(deadline, loop.time() + timeout / 2000)
+            continue
         url = page.url
         if any(p.search(url) for p in patterns):
             try:
@@ -845,10 +1087,30 @@ def _is_email_submission_progress_url(url: str) -> bool:
     return bool(re.search(r"email-verification|verification|verify|/password", path, re.IGNORECASE))
 
 
-async def _wait_email_submission_progress(page: Page, *, timeout: int) -> None:
-    """Accept both URL navigation and same-URL auth form transitions."""
-    deadline = asyncio.get_event_loop().time() + timeout / 1000
-    while asyncio.get_event_loop().time() < deadline:
+async def _wait_email_submission_progress(
+    page: Page,
+    *,
+    timeout: int,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+) -> None:
+    """Accept both URL navigation and same-URL auth form transitions.
+
+    提交邮箱后下一站经常先是 Cloudflare（auth.openai.com 托管挑战），必须先
+    等挑战过去；否则会在挑战页上白等 password 输入框然后超时。"""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout / 1000
+    while loop.time() < deadline:
+        if await _detect_cloudflare_challenge(page):
+            if not await _wait_for_cloudflare_clear(
+                page,
+                timeout_seconds=cloudflare_timeout_seconds,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                label="step2-cloudflare-after-submit",
+            ):
+                raise TimeoutError(f"邮箱提交后卡在 Cloudflare 挑战页（当前：{page.url}）")
+            deadline = max(deadline, loop.time() + 15)
+            continue
         if _is_email_submission_progress_url(page.url):
             return
         next_inputs = page.locator(
@@ -889,54 +1151,41 @@ async def _email_submit_state(page: Page) -> str:
 
 
 async def clear_openai_state(context, *, also_storage: bool = True) -> None:
-    """Clear cookies (and optionally localStorage / sessionStorage) for all
-    OpenAI / ChatGPT domains. Other origins (DuckDuckGo, email providers) are
-    untouched."""
-    # ---- cookies ----
-    total_target = 0
-    try:
-        all_cookies = await context.cookies()
-        for c in all_cookies:
-            d = (c.get("domain") or "").lstrip(".").lower()
-            if any(d == td or d.endswith("." + td) for td in OPENAI_COOKIE_DOMAINS):
-                total_target += 1
-    except Exception as e:  # noqa: BLE001
-        print(f"[clear] 列出 cookie 失败: {e}")
-
+    """Clear account state locally, retaining this browser's Cloudflare cookies."""
+    all_cookies = await context.cookies()
     cleared = 0
-    for domain in OPENAI_COOKIE_DOMAINS:
-        try:
-            await context.clear_cookies(domain=domain)
-            # 子域 catch-all：再来一遍 .domain
-            await context.clear_cookies(domain="." + domain)
-            cleared += 1
-        except Exception:
+    preserved = 0
+    for cookie in all_cookies:
+        domain = (cookie.get("domain") or "").lstrip(".").lower()
+        if not any(domain == target or domain.endswith("." + target) for target in OPENAI_COOKIE_DOMAINS):
             continue
-    print(f"[clear] cookies: 已扫描 {total_target} 个目标 cookie，清理了 {cleared} 个域")
+        if cookie.get("name") in CLOUDFLARE_COOKIE_NAMES:
+            preserved += 1
+            continue
+        await context.clear_cookies(name=cookie["name"], domain=cookie["domain"], path=cookie["path"])
+        cleared += 1
+    print(f"[clear] 已清理 {cleared} 个账号 cookie，保留 {preserved} 个 Cloudflare cookie")
 
-    # ---- localStorage / sessionStorage / IndexedDB ----
     if not also_storage:
         return
     tmp_page = None
+    cdp = None
     try:
         tmp_page = await context.new_page()
+        cdp = await context.new_cdp_session(tmp_page)
         for origin in OPENAI_STORAGE_ORIGINS:
-            try:
-                await tmp_page.goto(origin + "/blank-clear", wait_until="commit", timeout=10000)
-            except Exception:
-                # 大多数 OpenAI 子域 / 路径会 4xx 但仍能拿到正确 origin 上下文
-                pass
-            try:
-                await tmp_page.evaluate(
-                    "() => { try { localStorage.clear(); } catch(_){} "
-                    "try { sessionStorage.clear(); } catch(_){} }"
-                )
-            except Exception:
-                pass
-        print(f"[clear] localStorage/sessionStorage 已清理: {', '.join(OPENAI_STORAGE_ORIGINS)}")
-    except Exception as e:  # noqa: BLE001
-        print(f"[clear] storage 清理失败（一般无所谓）: {e}")
+            await cdp.send("Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "local_storage"})
+        for existing_page in context.pages:
+            parsed = urlparse(existing_page.url)
+            if f"{parsed.scheme}://{parsed.netloc}" in OPENAI_STORAGE_ORIGINS:
+                await existing_page.evaluate("() => sessionStorage.clear()")
+        print("[clear] localStorage/sessionStorage 已在浏览器本地清理（未访问清理页面）")
     finally:
+        if cdp is not None:
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
         if tmp_page is not None:
             try:
                 await tmp_page.close()
@@ -944,13 +1193,25 @@ async def clear_openai_state(context, *, also_storage: bool = True) -> None:
                 pass
 
 
-async def step1_open(page: Page) -> None:
+async def step1_open(
+    page: Page,
+    *,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+) -> None:
     print("[step 1] 打开 chatgpt.com")
     await page.goto(CHATGPT_HOME, wait_until="commit")
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=20000)
     except PWTimeout:
         pass
+    # 首页经常直接是 Cloudflare 托管挑战（标题本地化），等它放行再进 step2
+    await _settle_cloudflare(
+        page,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+        label="step1-cloudflare",
+    )
     try:
         await page.wait_for_load_state("networkidle", timeout=10000)
     except PWTimeout:
@@ -1173,6 +1434,7 @@ async def step2_signup_email(
             page,
             timeout_seconds=25,
             allow_manual_cloudflare=allow_manual_cloudflare,
+            cloudflare_timeout_seconds=cloudflare_timeout_seconds,
         )
     except TimeoutError:
         if not allow_manual_cloudflare:
@@ -1189,6 +1451,7 @@ async def step2_signup_email(
                 page,
                 timeout_seconds=30,
                 allow_manual_cloudflare=allow_manual_cloudflare,
+                cloudflare_timeout_seconds=cloudflare_timeout_seconds,
             )
         else:
             await save_debug_artifacts(page, "step2-no-email-input")
@@ -1229,7 +1492,12 @@ async def step2_signup_email(
             print(f"[step 2] 找到邮箱输入框，提交尝试 {attempt}/2，url={page.url}")
             await _submit_email_form(page, email_input, email)
             try:
-                await _wait_email_submission_progress(page, timeout=30000 if attempt == 1 else 45000)
+                await _wait_email_submission_progress(
+                    page,
+                    timeout=30000 if attempt == 1 else 45000,
+                    allow_manual_cloudflare=allow_manual_cloudflare,
+                    cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+                )
                 print(f"[step 2] 已进入下一步，url={page.url}")
                 return
             except TimeoutError:
@@ -1378,10 +1646,22 @@ async def step3_password(
     password: str,
     *,
     auth_mode: str = "otp",
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
 ) -> str:
     """Step 3: handle the password page. Returns the password actually used
     (empty string if we switched to OTP-only signup)."""
     print(f"[step 3] 等密码页（auth_mode={auth_mode}）")
+    # 提交邮箱后经常直接撞上 Cloudflare（auth.openai.com 的托管挑战，标题会本地化
+    # 成韩语/泰语等）。先等挑战过去，否则 _wait_url 会当成「找不到密码页」超时。
+    if not await _settle_cloudflare(
+        page,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+        label="step3-cloudflare",
+    ):
+        await save_debug_artifacts(page, "step3-cloudflare-timeout")
+        raise TimeoutError("step 3 一直是 Cloudflare 挑战页，没等到密码/验证码页")
     try:
         await _wait_url(
             page,
@@ -1390,8 +1670,16 @@ async def step3_password(
                 re.compile(r"^https://chatgpt\.com/auth/login\?email=", re.IGNORECASE),
             ],
             timeout=30000,
+            allow_manual_cloudflare=allow_manual_cloudflare,
+            cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+            label="step 3 等密码/验证码页",
         )
     except TimeoutError:
+        if await _detect_cloudflare_challenge(page):
+            await save_debug_artifacts(page, "step3-cloudflare-stuck")
+            raise TimeoutError(
+                f"step 3 卡在 Cloudflare 挑战页（标题会本地化），url={page.url}"
+            ) from None
         await save_debug_artifacts(page, "step3-no-password-or-verify-page")
         raise
 
@@ -1410,6 +1698,8 @@ async def step3_password(
             total_timeout_seconds=60,
             label="step 3 chatgpt 中间页继续后",
             max_retries=5,
+            allow_manual_cloudflare=allow_manual_cloudflare,
+            cloudflare_timeout_seconds=cloudflare_timeout_seconds,
         )
         if re.search(r"^https://chatgpt\.com/auth/login\?email=", page.url, re.IGNORECASE):
             await save_debug_artifacts(page, "step3-chatgpt-email-still-stuck")
@@ -1430,6 +1720,8 @@ async def step3_password(
                 total_timeout_seconds=60,
                 label="step 3 OTP 切换后等验证码页",
                 max_retries=5,
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                cloudflare_timeout_seconds=cloudflare_timeout_seconds,
             )
             return ""
         print("[step 3] 未找到 OTP 切换链接，回退到填密码")
@@ -1450,6 +1742,8 @@ async def step3_password(
         refill_password=password,
         label="step 3 等验证码页",
         max_retries=5,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
     )
     return password
 
@@ -1612,9 +1906,18 @@ async def step_login_existing_account(
     auth_mode: str = "otp",
     fetch_code: CodeFetcher,
     total_timeout_seconds: float = 180,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
 ) -> str:
     print(f"[relogin] 打开登录页：{email}")
     await page.goto(CHATGPT_LOGIN_URL, wait_until="domcontentloaded")
+    if not await _settle_cloudflare(
+        page,
+        allow_manual_cloudflare=allow_manual_cloudflare,
+        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+        label="relogin-cloudflare",
+    ):
+        raise TimeoutError("relogin 登录页一直是 Cloudflare 挑战页")
 
     email_input = await _ensure_login_email_input(page)
     await _submit_email_form(page, email_input, email)
@@ -1630,6 +1933,8 @@ async def step_login_existing_account(
                 accept=("password", "code", "logged_in"),
                 total_timeout_seconds=step_budget,
                 label="relogin 等登录下一步",
+                allow_manual_cloudflare=allow_manual_cloudflare,
+                cloudflare_timeout_seconds=cloudflare_timeout_seconds,
             )
             break
         except TimeoutError:
@@ -1658,6 +1963,8 @@ async def step_login_existing_account(
                     accept=("code", "logged_in"),
                     total_timeout_seconds=60,
                     label="relogin OTP 切换后等验证码页",
+                    allow_manual_cloudflare=allow_manual_cloudflare,
+                    cloudflare_timeout_seconds=cloudflare_timeout_seconds,
                 )
             elif password:
                 print("[relogin] 未找到 OTP 入口，回退到密码登录")
@@ -1678,6 +1985,8 @@ async def step_login_existing_account(
                         accept=("code", "logged_in"),
                         total_timeout_seconds=40,
                         label="relogin 密码提交后",
+                        allow_manual_cloudflare=allow_manual_cloudflare,
+                        cloudflare_timeout_seconds=cloudflare_timeout_seconds,
                     )
                     break
                 except TimeoutError:
@@ -1694,17 +2003,28 @@ async def step_login_existing_account(
             accept=("logged_in",),
             total_timeout_seconds=total_timeout_seconds,
             label="relogin 等登录完成",
+            allow_manual_cloudflare=allow_manual_cloudflare,
+            cloudflare_timeout_seconds=cloudflare_timeout_seconds,
         )
     return used_code
 
 
-async def step4_code(page: Page, fetch_code: CodeFetcher) -> str:
+async def step4_code(
+    page: Page,
+    fetch_code: CodeFetcher,
+    *,
+    allow_manual_cloudflare: bool = False,
+    cloudflare_timeout_seconds: float = CLOUDFLARE_WAIT_SECONDS,
+) -> str:
     print("[step 4] 等验证码页并填入验证码")
     try:
         await _wait_url(
             page,
             [re.compile(r"email-verification|verification|verify", re.IGNORECASE)],
             timeout=60000,
+            allow_manual_cloudflare=allow_manual_cloudflare,
+            cloudflare_timeout_seconds=cloudflare_timeout_seconds,
+            label="step 4 等验证码页",
         )
     except TimeoutError as e:
         # Some pages do not change URL; try locating the input instead.

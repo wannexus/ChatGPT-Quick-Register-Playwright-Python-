@@ -16,6 +16,8 @@ from core import codex_oauth, num5sim
 PHONE = "+15550000001"
 SMS_FAILURE = ("We couldn't send a text message to this phone number, so we switched to WhatsApp. "
                "Continue to send a verification code on WhatsApp.")
+SMS_FAILURE_SV = ("Vi kunde inte skicka ett sms till det här telefonnumret, så vi bytte till WhatsApp. "
+                  "Fortsätt för att skicka en verifieringskod på WhatsApp.")
 
 
 class BindingStore:
@@ -151,6 +153,21 @@ class FiveSimOAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buy.call_count, 2)
         self.assertEqual(cancel.call_count, 0)
         self.assertEqual(self.otp.await_count, 1)
+
+    async def test_swedish_sms_failure_bans_the_number_without_polling_it(self):
+        good = "+15550000002"
+        store = BindingStore()
+        buy, cancel, error = await self.run_verifier(
+            store, expected_phone=good, purchases=[order(), order(good, 2)],
+            checks=[order(good, 2, sms=[{"code": "654321"}])],
+            page_text=lambda _page: SMS_FAILURE_SV if not self.page.goto.await_count else "",
+        )
+        self.assertIsNone(error)
+        self.assertEqual([call[0] for call in self.calls.mock_calls], ["buy", "ban", "buy", "check"])
+        self.assertEqual(self.ban.call_args.kwargs["order_id"], 1)
+        self.assertEqual(buy.call_count, 2)
+        self.assertEqual(cancel.call_count, 0)
+        self.assertEqual(store.bindings, {7: good})
 
     async def test_rejected_pool_number_is_removed_without_erasing_existing_bindings(self):
         good = "+15550000002"
