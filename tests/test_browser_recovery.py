@@ -68,6 +68,33 @@ KOREAN_STEP3_CHALLENGE_PAGE = """<!doctype html>
 </body></html>
 """
 
+# 2026-09-30 真机抓包（step 4 等验证码页-cloudflare-challenge-*.html）：
+# 标题是 "Check your inbox - OpenAI" 的**邮箱验证码业务页**，HTML 里只有
+# Cloudflare 的 jsd 埋点（/cdn-cgi/challenge-platform/scripts/jsd/main.js），
+# 不是挑战页。旧判定把这个埋点当成挑战，还在验证码表单上误点了 submit。
+EMAIL_VERIFICATION_WITH_JSDE_TELEMETRY = """<!doctype html>
+<html lang="en-US"><head>
+<title>Check your inbox - OpenAI</title>
+<script nonce="">
+(()=>{const a=[];/* ... */})();
+(()=>{
+  const a=document.createElement('script');
+  a.nonce='fixture';
+  a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';
+  document.getElementsByTagName('head')[0].appendChild(a);
+})();
+</script>
+</head>
+<body>
+  <h1>Check your inbox</h1>
+  <p>Enter the code we sent to</p>
+  <form>
+    <input autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+    <button type="submit">Continue</button>
+  </form>
+</body></html>
+"""
+
 NORMAL_PAGE = """<!doctype html>
 <html><head><title>ChatGPT: Chat, Work, Create & Code with AI</title></head>
 <body><button>Log in</button><button>Sign up</button></body></html>
@@ -329,6 +356,67 @@ class CloudflareWaitTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertTrue(cleared)
         self.assertGreaterEqual(advances["n"], 1, "等待期间必须尝试推进 Turnstile，而不是干等")
+
+
+class FalsePositiveTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    """业务页上的 Cloudflare jsd 埋点不能当成挑战，更不能去点它的 submit。"""
+
+    async def asyncSetUp(self):
+        from playwright.async_api import async_playwright
+
+        self._pw = await async_playwright().start()
+        self.browser = await self._pw.chromium.launch(headless=True)
+
+    async def asyncTearDown(self):
+        try:
+            await self.browser.close()
+        finally:
+            await self._pw.stop()
+
+    async def test_email_verification_page_with_jsd_script_is_not_a_challenge(self):
+        page = await self.browser.new_page()
+        await page.set_content(EMAIL_VERIFICATION_WITH_JSDE_TELEMETRY)
+        self.assertFalse(
+            await flow._detect_cloudflare_challenge(page),
+            "jsd 埋点不是挑战页；误判会在验证码表单上乱点",
+        )
+
+    async def test_wait_url_returns_on_the_code_page_without_entering_cf_wait(self):
+        real = await self.browser.new_page()
+        await real.set_content(EMAIL_VERIFICATION_WITH_JSDE_TELEMETRY)
+
+        class _Page:
+            """set_content 后地址是 about:blank；真机 URL 是 auth.openai.com/email-verification。"""
+
+            url = "https://auth.openai.com/email-verification"
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        page = _Page()
+        with patch.object(flow, "_wait_for_cloudflare_clear", AsyncMock()) as wait_cf, \
+             patch.object(flow, "_try_advance_cloudflare", AsyncMock()) as advance:
+            await flow._wait_url(
+                page,
+                [re.compile(r"email-verification|verification|verify", re.I)],
+                timeout=500,
+                allow_manual_cloudflare=True,
+                label="step 4 等验证码页",
+            )
+        wait_cf.assert_not_awaited()
+        advance.assert_not_awaited()
+
+    async def test_real_challenge_still_waits(self):
+        page = await self.browser.new_page()
+        await page.set_content(THAI_CHALLENGE_PAGE)
+        self.assertTrue(await flow._detect_cloudflare_challenge(page))
+
+    def test_main_frame_submit_is_not_a_turnstile_control(self):
+        source = Path("core/flow.py").read_text(encoding="utf-8")
+        body = source[source.index("_TURNSTILE_MAIN_SELECTORS"):]
+        body = body[: body.index("_TURNSTILE_CLICK_TEXTS")]
+        self.assertNotIn("button[type=\"submit\"]", body)
+        self.assertIn("#challenge-submit", body)
 
 
 class CloudflareUrlMatchTests(unittest.IsolatedAsyncioTestCase):

@@ -232,8 +232,11 @@ WebGL 厂商/渲染器，并对 `getImageData`、`getClientRects` 加确定性�
 首页（chatgpt.com）和 `auth.openai.com` 在这台机器+当前代理上会返回 Cloudflare 托管挑战页，
 实测 30~115s 才自动放行。挑战页**没有任何 Sign up / 密码输入框**，而且标题会按浏览器语言本地化
 （泰语 `รอสักครู่...`、韩语 `잠시만 기다리십시오…`、英文 `Just a moment...`），所以判定不靠英文文案：
-同时看 `cf_chl_opt` / `/cdn-cgi/challenge-platform/` 等 HTML 令牌、`#challenge-running` /
+同时看 `cf_chl_opt` / `challenge-platform/h/b/orchestrate` 等 HTML 令牌、`#challenge-running` /
 `div.cf-turnstile` 等 DOM 结构，以及多语言标题/「验证成功，等待站点响应」类正文。
+**不会**把挂在 Cloudflare 后面的业务页（例如 `auth.openai.com/email-verification`
+「Check your inbox」）误判成挑战：那类页只有 `challenge-platform/scripts/jsd/main.js`
+埋点脚本，不是挑战；判定也不会再去点它的 submit（2026-09-30 真机误点事故已修）。
 
 - 挑战出现时会打印「检测到 Cloudflare 托管挑战…请勿关闭该窗口」，并在
   `_wait_for_cloudflare_clear` 里等它过去，**不再把挑战页当成「找不到 Sign up 按钮」**。

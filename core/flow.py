@@ -139,6 +139,13 @@ HARD_BLOCK_PATTERNS = [
     re.compile(r"user[_-]?already[_-]?exists", re.IGNORECASE),
 ]
 # Ban text rules come from core.ban_check so login and mailbox classification stay aligned.
+#
+# 强标记：单独出现即可判定为挑战页。
+# 注意：不能写成宽泛的 "/cdn-cgi/challenge-platform/" —— 挂在 Cloudflare 后面的
+# 业务页（比如 auth.openai.com 的「Check your inbox」验证码页）也会注入
+# `challenge-platform/scripts/jsd/main.js` 埋点，那不是挑战页。
+# 2026-09-30 真机 debug（step 4 等验证码页-cloudflare-challenge-*.html）就是
+# 被这个 jsd 埋点误判，还在验证码表单上误点了 submit。
 CLOUDFLARE_CHALLENGE_MARKERS = (
     "challenges.cloudflare.com/turnstile",
     "__cf_chl_tk",
@@ -147,14 +154,14 @@ CLOUDFLARE_CHALLENGE_MARKERS = (
     "cf-turnstile-response",
     "__cf_chl_",
     "challenge-error-text",
-    # 2026-09-29 真实抓包（/tmp 之外的 output/debug 快照同款）：托管挑战页的
-    # <title> 会随浏览器语言本地化（泰语 "รอสักครู่..."、西语等），但下面这些
-    # 令牌始终在 HTML 里，所以判定不能只靠英文 title 文案。
+    # 真正的挑战编排脚本 / 令牌，不会出现在正常业务页
+    "challenge-platform/h/b/orchestrate",
+    "challenge-platform/h/c/",
     "cf_chl_opt",
-    "/cdn-cgi/challenge-platform/",
     "cf-chl-",
 )
 # 挑战容器/iframe 的语言无关兜底（DOM 层，不看任何文案）。
+# 同样只认挑战容器/turnstile iframe/编排脚本，不认 jsd 埋点脚本。
 CLOUDFLARE_DOM_PROBE_JS = """
 () => {
   try {
@@ -163,7 +170,11 @@ CLOUDFLARE_DOM_PROBE_JS = """
       + '#challenge-body-text, div.cf-turnstile, '
       + 'iframe[src*="challenges.cloudflare.com"]'
     )) return true;
-    return !!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]');
+    return !!document.querySelector(
+      'script[src*="challenge-platform"][src*="orchestrate"], '
+      + 'script[src*="cf_chl_opt"], '
+      + 'script[src*="challenge-platform/h/c/"]'
+    );
   } catch (e) {
     return false;
   }
@@ -188,7 +199,7 @@ CLOUDFLARE_TITLE_PATTERNS = (
     re.compile(r"одну минуту|подождите", re.IGNORECASE),  # ru
     re.compile(r"un momento|attendi", re.IGNORECASE),  # it
     re.compile(r"even geduld|een moment", re.IGNORECASE),  # nl
-    re.compile(r"chwileczkę|moment", re.IGNORECASE),  # pl — 只看 title，误伤面小
+    re.compile(r"chwileczkę", re.IGNORECASE),  # pl（不用裸 "moment"，避免误伤）
     re.compile(r"bir dakika|lütfen bekleyin", re.IGNORECASE),  # tr
     re.compile(r"sebentar", re.IGNORECASE),  # id
     re.compile(r"chờ một chút", re.IGNORECASE),  # vi
@@ -206,14 +217,23 @@ CLOUDFLARE_TEXT_PATTERNS = (
 )
 # Turnstile 交互控件（托管挑战里的复选框 / 「我不是机器人」类按钮）。
 # 只做用户可见的点击，不做逆向求解；点不动就继续等托管挑战自动放行。
+# 主文档上**绝不**盲点 button[type=submit] —— 那会误点验证码/邮箱业务表单。
 _TURNSTILE_FRAME_URL_HINTS = ("challenges.cloudflare.com", "challenges.cloudflareusercontent.com")
-_TURNSTILE_CLICK_SELECTORS = (
+_TURNSTILE_FRAME_SELECTORS = (
     'input[type="checkbox"]',
     '[role="checkbox"]',
     'label',
     '#challenge-stage button',
     'button[type="submit"]',
     'a[role="button"]',
+)
+# 主文档上只点挑战容器内的控件 / 明确的「验证真人」按钮
+_TURNSTILE_MAIN_SELECTORS = (
+    '#challenge-stage button',
+    '#challenge-submit',
+    '#challenge-form button',
+    'div.cf-turnstile button',
+    'div.cf-turnstile input[type="checkbox"]',
 )
 _TURNSTILE_CLICK_TEXTS = (
     "verify you are human", "i am human", "i'm human", "human",
@@ -449,7 +469,8 @@ async def _detect_soft_error(page: Page) -> bool:
 async def _detect_cloudflare_challenge(page: Page) -> bool:
     try:
         url = page.url.lower()
-        if "__cf_chl" in url or "/cdn-cgi/challenge-platform/" in url:
+        # URL 层只认真正的挑战路径；jsd 埋点不会改变地址栏
+        if "__cf_chl" in url or "challenge-platform/h/b/orchestrate" in url or "challenge-platform/h/c/" in url:
             return True
     except Exception:
         pass
@@ -485,6 +506,9 @@ async def _try_advance_cloudflare(page: Page) -> bool:
 
     只点击、不求解。托管挑战（managed）多数会自己放行；交互式 Turnstile 需要
     这一下点击才会继续。点不到就返回 False，调用方继续等。
+
+    安全约束：主文档上**绝不**盲点 button[type=submit] —— 误判时那会点掉
+    邮箱验证码/密码业务表单（2026-09-30 真机事故）。
     """
     clicked = False
 
@@ -513,16 +537,15 @@ async def _try_advance_cloudflare(page: Page) -> bool:
         except Exception:
             frame_url = ""
         is_cf_frame = any(hint in frame_url for hint in _TURNSTILE_FRAME_URL_HINTS)
-        for selector in _TURNSTILE_CLICK_SELECTORS:
+        selectors = _TURNSTILE_FRAME_SELECTORS if is_cf_frame else _TURNSTILE_MAIN_SELECTORS
+        for selector in selectors:
             kind = f"frame:{selector}" if is_cf_frame else selector
-            # 只在 CF 相关 frame 里盲点 checkbox/label，避免误点业务按钮
-            if not is_cf_frame and selector in ('input[type="checkbox"]', '[role="checkbox"]', "label"):
-                continue
             if await _click_locator(frame.locator(selector), kind):
                 clicked = True
                 break
         if clicked:
             break
+        # CF frame 里再按「验证真人」文案找按钮
         if is_cf_frame:
             for text in _TURNSTILE_CLICK_TEXTS:
                 for selector in ("button", "[role=button]", "input[type=submit]", "label", "a"):
@@ -541,7 +564,7 @@ async def _try_advance_cloudflare(page: Page) -> bool:
             break
 
     if not clicked:
-        # 主文档上的多语言「验证您是人类」类按钮（不含 checkbox，避免误伤）
+        # 主文档上的多语言「验证您是人类」类按钮（不含 checkbox/submit，避免误伤业务表单）
         for text in _TURNSTILE_CLICK_TEXTS:
             for selector in ("button", "[role=button]", "input[type=submit]", "a"):
                 try:
@@ -814,6 +837,17 @@ async def wait_for_url_with_recovery(
     same_state_streak = 0  # 连续多少轮卡在「重试后还在错误页」
 
     while asyncio.get_event_loop().time() < deadline:
+        url = page.url
+        if any(p.search(url) for p in success_patterns):
+            # URL 命中且页面上已有业务表单 → 直接成功，不再进 CF 等待
+            try:
+                if await _has_business_form(page):
+                    return
+            except Exception:
+                pass
+            if not await _detect_cloudflare_challenge(page):
+                return
+
         if await _detect_cloudflare_challenge(page):
             if not await _wait_for_cloudflare_clear(
                 page,
@@ -825,7 +859,6 @@ async def wait_for_url_with_recovery(
             deadline = max(deadline, asyncio.get_event_loop().time() + 15)
             continue
 
-        url = page.url
         if any(p.search(url) for p in success_patterns):
             return
 
@@ -1001,19 +1034,47 @@ async def _submit_email_form(page: Page, email_input, email: str) -> None:
     await asyncio.sleep(2.0)
 
 
+# 业务表单特征：验证码/密码/邮箱输入框 —— 出现即说明不是纯挑战页
+_BUSINESS_FORM_JS = """
+() => {
+  try {
+    return !!document.querySelector(
+      'input[type="password"], input[autocomplete="one-time-code"], '
+      + 'input[name*="code" i], input[placeholder*="code" i], '
+      + 'input[inputmode="numeric"], input[type="email"], input[type="tel"]'
+    );
+  } catch (e) {
+    return false;
+  }
+}
+"""
+
+
+async def _has_business_form(page: Page) -> bool:
+    try:
+        return await page.evaluate(_BUSINESS_FORM_JS) is True
+    except Exception:
+        return False
+
+
 async def _url_ready(page: Page, patterns: list[re.Pattern]) -> bool:
     """URL 命中目标，且当前页不是 Cloudflare 挑战页。
 
     挑战页的 URL 往往已经是 auth.openai.com/...，会误命中 success_patterns
     （2026-09-29 step3 就是这样把韩语挑战页当成「已到密码页」）。
+    反过来，若 URL 已命中且页面上就有业务表单，即使有 CF 埋点噪声也认成功。
     """
+    url = page.url
+    if not any(p.search(url) for p in patterns):
+        return False
     try:
+        if await _has_business_form(page):
+            return True
         if await _detect_cloudflare_challenge(page):
             return False
     except Exception:
         pass
-    url = page.url
-    return any(p.search(url) for p in patterns)
+    return True
 
 
 async def _settle_cloudflare(
@@ -1046,12 +1107,25 @@ async def _wait_url(
     """等 URL 命中 patterns；中途被 Cloudflare 拦住时先等挑战过去。
 
     挑战页 URL 可能已经匹配 patterns（auth.openai.com），所以必须先排除挑战
-    再认成功。挑战等待不占用 `timeout` 预算，用单独的 cloudflare_timeout。
+    再认成功；但若 URL 已命中且页面上就有验证码/密码/邮箱输入框，那是业务页
+    （哪怕 HTML 里有 CF jsd 埋点），直接放行，绝不去点它的 submit。
     """
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout / 1000
     wait_label = label or "wait-url"
     while loop.time() < deadline:
+        url = page.url
+        url_hit = any(p.search(url) for p in patterns)
+        if url_hit:
+            try:
+                if await _has_business_form(page):
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except PWTimeout:
+                        pass
+                    return
+            except Exception:
+                pass
         if await _detect_cloudflare_challenge(page):
             if not await _wait_for_cloudflare_clear(
                 page,
@@ -1063,8 +1137,7 @@ async def _wait_url(
             # 挑战放行后再给真实页面一点时间落到目标 URL
             deadline = max(deadline, loop.time() + timeout / 2000)
             continue
-        url = page.url
-        if any(p.search(url) for p in patterns):
+        if url_hit:
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=5000)
             except PWTimeout:
