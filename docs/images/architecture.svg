@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 520" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <rect width="680" height="520" fill="#f7f8fc"/>
+  <text x="40" y="36" font-size="14" font-weight="500" fill="#111827">ChatGPT Quick Register · 架构</text>
+
+  <!-- WebUI -->
+  <rect x="40" y="60" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="130" y="84" text-anchor="middle" font-size="13" fill="#111827">Web UI</text>
+  <text x="130" y="102" text-anchor="middle" font-size="11" fill="#6b7280">FastAPI · 127.0.0.1:8765</text>
+
+  <!-- register.py -->
+  <rect x="250" y="60" width="180" height="56" rx="8" fill="#2563eb" stroke="#1d4ed8" stroke-width="0.5"/>
+  <text x="340" y="84" text-anchor="middle" font-size="13" fill="#fff">register.py</text>
+  <text x="340" y="102" text-anchor="middle" font-size="11" fill="#dbeafe">CLI / 批量编排</text>
+
+  <!-- flow -->
+  <rect x="460" y="60" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="550" y="84" text-anchor="middle" font-size="13" fill="#111827">core/flow.py</text>
+  <text x="550" y="102" text-anchor="middle" font-size="11" fill="#6b7280">注册 1–6 步 / Cloudflare</text>
+
+  <!-- arrows top -->
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6" fill="none" stroke="#9ca3af" stroke-width="1"/>
+    </marker>
+  </defs>
+  <line x1="220" y1="88" x2="250" y2="88" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="430" y1="88" x2="460" y2="88" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- codex oauth -->
+  <rect x="250" y="150" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="340" y="174" text-anchor="middle" font-size="13" fill="#111827">core/codex_oauth.py</text>
+  <text x="340" y="192" text-anchor="middle" font-size="11" fill="#6b7280">Codex OAuth · OTP · 5sim</text>
+  <line x1="340" y1="116" x2="340" y2="150" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- fingerprint -->
+  <rect x="40" y="150" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="130" y="174" text-anchor="middle" font-size="13" fill="#111827">fingerprint / stealth</text>
+  <text x="130" y="192" text-anchor="middle" font-size="11" fill="#6b7280">每账号一套浏览器指纹</text>
+
+  <!-- num5sim -->
+  <rect x="460" y="150" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="550" y="174" text-anchor="middle" font-size="13" fill="#111827">core/num5sim.py</text>
+  <text x="550" y="192" text-anchor="middle" font-size="11" fill="#6b7280">虚拟号购买 / 接码 / 号码池</text>
+
+  <!-- storage row -->
+  <rect x="40" y="250" width="180" height="56" rx="8" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="0.5"/>
+  <text x="130" y="274" text-anchor="middle" font-size="13" fill="#065f46">MySQL</text>
+  <text x="130" y="292" text-anchor="middle" font-size="11" fill="#047857">账号 / session / codexAuth</text>
+
+  <rect x="250" y="250" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="340" y="274" text-anchor="middle" font-size="13" fill="#111827">邮箱服务</text>
+  <text x="340" y="292" text-anchor="middle" font-size="11" fill="#6b7280">MHJC / DuckDuckGo / iCloud / QQ</text>
+
+  <rect x="460" y="250" width="180" height="56" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="0.5"/>
+  <text x="550" y="274" text-anchor="middle" font-size="13" fill="#111827">SUB2API</text>
+  <text x="550" y="292" text-anchor="middle" font-size="11" fill="#6b7280">推送 Codex 凭据</text>
+
+  <line x1="130" y1="206" x2="130" y2="250" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="340" y1="206" x2="340" y2="250" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="550" y1="206" x2="550" y2="250" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- bottom: external -->
+  <rect x="40" y="350" width="600" height="120" rx="8" fill="#eef2ff" stroke="#a5b4fc" stroke-width="0.5"/>
+  <text x="340" y="380" text-anchor="middle" font-size="13" fill="#312e81">外部服务</text>
+  <text x="340" y="410" text-anchor="middle" font-size="12" fill="#3730a3">Playwright Chromium　·　auth.openai.com / chatgpt.com　·　5sim.net　·　Cloudflare 挑战页</text>
+  <text x="340" y="438" text-anchor="middle" font-size="11" fill="#4338ca">邮箱 API / IMAP　·　代理出口（可选）　·　AntBrowser（可选指纹浏览器）</text>
+
+  <!-- lines from stack to external -->
+  <line x1="340" y1="306" x2="340" y2="350" stroke="#9ca3af" stroke-width="1" marker-end="url(#ar)"/>
+</svg>
