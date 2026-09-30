@@ -1760,7 +1760,11 @@ async def _run_one_codex_push(
     label: str,
     ant_session=None,
 ) -> dict[str, Any]:
-    """Freshly log in one selected account, save new credentials, then push it.
+    """Fresh Codex OAuth login for one account, save credentials, then push it.
+
+    不再先登录 chatgpt.com：直接打开 Codex OAuth authorize，由
+    `run_codex_oauth` 在 auth.openai.com 的 log-in / email-verification 页
+    完成邮箱 + OTP，拿新凭据后再推送。
 
     Deliberately stricter than the tolerant re-login flow: a fresh Codex OAuth
     credential is mandatory, so a failed OAuth can never fall back to the
@@ -1810,38 +1814,15 @@ async def _run_one_codex_push(
             # A previous account's ChatGPT cookies must not leak into this one.
             await flow.clear_openai_state(context, also_storage=True)
 
-        print(f"[{label}] [codex-push] 开始登录：{email}  auth={auth_mode}")
+        print(f"[{label}] [codex-push] 直接进入 Codex 登录页 OTP：{email}  auth={auth_mode}")
         fetch_code = make_code_fetcher(args, since_ts=time.time())
-        await asyncio.wait_for(
-            flow.step_login_existing_account(
-                page,
-                email=email,
-                password=password,
-                auth_mode=auth_mode,
-                fetch_code=fetch_code,
-                total_timeout_seconds=max(45, min(args.relogin_timeout, 180)),
-                allow_manual_cloudflare=not getattr(args, "headless", False),
-                cloudflare_timeout_seconds=max(0.0, float(getattr(args, "cloudflare_timeout", 180) or 0)),
-            ),
-            timeout=max(60, args.relogin_timeout),
-        )
-
-        session_result = await session.fetch_session(
-            page,
-            total_timeout=min(30.0, max(10.0, args.relogin_timeout / 6)),
-            reload_after_seconds=8.0,
-            second_reload_after_seconds=18.0,
-        )
-        if not _looks_logged_in_session(session_result):
-            raise RuntimeError("登录后未拿到有效 session")
-        result["login"] = True
-
-        oauth_fetch_code = make_code_fetcher(args, since_ts=time.time())
         phone_verifier = _build_5sim_phone_verifier(args, account_id=account_id, account_store=store)
+        # 不先登录 chatgpt.com：run_codex_oauth 自己会在 auth.openai.com 的
+        # log-in / email-verification 页填邮箱 + 拉 OTP，省掉一次完整登录。
         codex_creds = await codex_oauth_module.run_codex_oauth(
             page,
             account_email=email,
-            fetch_code=oauth_fetch_code,
+            fetch_code=fetch_code,
             phone_verifier=phone_verifier,
             proxy=args.proxy or None,
             proxy_insecure=args.proxy_insecure,
@@ -1851,7 +1832,23 @@ async def _run_one_codex_push(
         )
         if not str((codex_creds or {}).get("access_token") or ""):
             raise RuntimeError("codex OAuth 未返回 access_token，拒绝使用旧凭据")
+        # OAuth 成功即视为已登录（登录就发生在 Codex 登录页的 OTP）
+        result["login"] = True
         result["oauth"] = True
+
+        # OAuth 之后浏览器已带 OpenAI 登录态，尽力抓一份 session 供账号记录用；
+        # 抓不到不影响推送（SUB2API 要的是 codexAuth）。
+        session_result = None
+        try:
+            session_result = await session.fetch_session(
+                page,
+                total_timeout=min(30.0, max(10.0, args.relogin_timeout / 6)),
+                reload_after_seconds=8.0,
+                second_reload_after_seconds=18.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[{label}] [codex-push] session 抓取失败（继续保存凭据）：{e}")
+            session_result = {"ok": False, "error": str(e), "status": 0, "parsed": None}
 
         extras = {
             "authMode": auth_mode,

@@ -131,11 +131,12 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, *, store, oauth=AsyncMock(return_value=FRESH_CODEX), push=None, args=None):
         args = args or _args()
         push = push or Mock(return_value=sub2api.PushResult(pushed=[{"email": "person@example.com"}], failed=[], skipped=[]))
+        self.chatgpt_login = AsyncMock(return_value="123456")
         with patch.object(register, "AccountStore", return_value=store), \
              patch.object(register.flow, "clear_openai_state", AsyncMock()), \
              patch.object(register, "make_code_fetcher", Mock(return_value=object())), \
              patch.object(register, "flow", register.flow), \
-             patch.object(register.flow, "step_login_existing_account", AsyncMock(return_value="123456")), \
+             patch.object(register.flow, "step_login_existing_account", self.chatgpt_login), \
              patch.object(register.session, "fetch_session", AsyncMock(return_value=NEW_SESSION)), \
              patch.object(register.codex_oauth_module, "run_codex_oauth", oauth), \
              patch.object(register.sub2api, "push_accounts", push):
@@ -159,6 +160,14 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pushed_accounts[0]["codexAuth"]["access_token"], "fresh-codex")
         self.assertTrue(push.call_args.kwargs["require_codex"])
 
+    async def test_push_never_logs_into_chatgpt_first(self):
+        """Codex 推送直接走 Codex 登录页 OTP，不再先登录 chatgpt.com。"""
+        store = StubStore(_account())
+        result, _push = await self._run(store=store)
+
+        self.assertTrue(result["login"] and result["oauth"])
+        self.chatgpt_login.assert_not_awaited()
+
     async def test_5sim_verifier_receives_selected_mysql_account_store_context(self):
         store = StubStore(_account())
         with patch.object(register, "_build_5sim_phone_verifier", return_value=object()) as build:
@@ -180,15 +189,15 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
         oauth = AsyncMock(side_effect=RuntimeError("oauth denied"))
         result, push = await self._run(store=store, oauth=oauth)
 
+        self.assertFalse(result["login"])
         self.assertFalse(result["oauth"])
         self.assertFalse(result["pushed"])
         self.assertEqual(result["error"], "oauth denied")
         push.assert_not_called()
-        # The stored codexAuth stays the old one, and the login itself still
-        # worked, so the account must not be re-marked as needing a re-login.
+        # OAuth 就是这一步的登录；失败时保持旧凭据，并标记需要重登。
         self.assertEqual(len(store.saves), 1)
         marked = store.saves[0]["data"]
-        self.assertFalse(marked.get("reloginRequired", False))
+        self.assertTrue(marked.get("reloginRequired"))
         self.assertEqual(marked["codexAuth"]["access_token"], "old-codex")
         self.assertEqual(marked["codexAuth"]["refresh_token"], "old-refresh")
         self.assertEqual(marked["session"], _account()["session"])
@@ -244,10 +253,11 @@ class CodexPushFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_login_failure_keeps_the_old_record_intact(self):
         store = StubStore(_account())
+        oauth = AsyncMock(side_effect=RuntimeError("denied"))
         with patch.object(register, "AccountStore", return_value=store), \
              patch.object(register.flow, "clear_openai_state", AsyncMock()), \
              patch.object(register, "make_code_fetcher", Mock(return_value=object())), \
-             patch.object(register.flow, "step_login_existing_account", AsyncMock(side_effect=RuntimeError("denied"))), \
+             patch.object(register.codex_oauth_module, "run_codex_oauth", oauth), \
              patch.object(register.sub2api, "push_accounts") as push:
             result = await register._run_one_codex_push(_args(), _context(), 7, label="test")
 

@@ -591,7 +591,7 @@
             <button class="small-btn primary" id="codexPushBtn" disabled>Codex 登录并推送 (0)</button>
           </div>
         </div>
-        <p class="hint" style="margin:0 0 10px;">勾选账号后点「Codex 登录并推送」：自动重新登录 → 获取新的 Codex 凭据并写入 MySQL → 推送到 SUB2API。登录或 OAuth 失败时不会推送旧凭据。被封禁的账号不会被推送。</p>
+        <p class="hint" style="margin:0 0 10px;">勾选账号后点「Codex 登录并推送」：直接走 Codex 登录页邮箱 OTP（不再先登录 chatgpt.com）→ 获取新的 Codex 凭据并写入 MySQL → 推送到 SUB2API。登录或 OAuth 失败时不会推送旧凭据。被封禁的账号不会被推送。</p>
         <p class="hint" id="banScanHint" style="margin:0 0 10px;display:none;"></p>
         <div class="table">
           <table>
@@ -921,7 +921,7 @@
       </div>
       <div class="modal-body" style="font-family:inherit;white-space:normal;">
         <p style="margin-top:0;color:var(--fg-muted)">
-          将对选定的 <b id="codexPushCount">0</b> 个账号依次执行：重新登录 ChatGPT → 获取新的 Codex OAuth 凭据 → 写入 MySQL → 推送到 SUB2API。
+          将对选定的 <b id="codexPushCount">0</b> 个账号依次执行：直接进入 Codex 登录页做邮箱 OTP → 获取新的 Codex OAuth 凭据 → 写入 MySQL → 推送到 SUB2API（不再先登录 chatgpt.com）。
           OAuth 失败时该账号不会推送，也不会复用旧凭据。
         </p>
         <div id="codexPushTargetHint" class="hint"></div>
@@ -1760,7 +1760,7 @@ async function pollCodexPush() {
 
 async function codexPushStart() {
   if (!selectedAccounts.size) { alert("请先在账号列表勾选要处理的账号"); return; }
-  if (!confirm(`将对 ${selectedAccounts.size} 个账号执行：重新登录 → 获取新 Codex 凭据 → 写入 MySQL → 推送 SUB2API。确认开始？`)) return;
+  if (!confirm(`将对 ${selectedAccounts.size} 个账号执行：直接走 Codex 登录页 OTP → 获取新 Codex 凭据 → 写入 MySQL → 推送 SUB2API（不再先登录 chatgpt.com）。确认开始？`)) return;
 
   const payload = buildPayload();
   if (payload.codeSource === "qq" && (!payload.qqUser || !payload.qqPass)) {

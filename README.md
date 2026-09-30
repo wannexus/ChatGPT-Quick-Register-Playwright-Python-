@@ -44,7 +44,7 @@ playwright install chromium     # 装一次 Chromium
 - 「刷新 Cookie」：按账号重新登录（`--code-source qq` 或 `mhjc`），成功后只更新该账号在 MySQL 中的 Cookie/session
 - 「删除空 session」一键清掉 session 为空的账号记录
 - 「复制 access_token」一键导出**所有有效**账号的 token 列表
-- **「Codex 登录并推送」**：在账号表勾选账号后，对每个账号依次执行「重新登录 ChatGPT → 获取**新的** Codex OAuth 凭据（含 refresh_token）→ 写入 MySQL → 推送到 SUB2API」。
+- **「Codex 登录并推送」**：在账号表勾选账号后，对每个账号依次执行「**直接进入 Codex 登录页做邮箱 OTP**（不再先登录 chatgpt.com）→ 获取**新的** Codex OAuth 凭据（含 refresh_token）→ 写入 MySQL → 推送到 SUB2API」。
   逐账号显示 登录 / OAuth / 已保存 / 推送 状态；**登录或 OAuth 失败时不会推送，也不会复用账号里的旧凭据**
 - **「检测封禁」**：扫描账号邮箱里的 OpenAI 停用通知，把命中的账号在 MySQL 里标记为封禁（见下节）
 - **「SUB2API 设置」**：打开设置时从项目 `.env` 自动读取 URL/凭据并获取分组；分组通过下拉框选择，修改 URL 或 API Key 后会防抖刷新。管理员 API Key、可选 JWT 兜底邮箱/密码、分组及并发数 / 优先级 / 速率倍率 / 隐私模式都保存在 `.env`（`QR_SUB2API_*`），密钥只写入服务端、不回传页面
