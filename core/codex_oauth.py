@@ -388,6 +388,35 @@ EMAIL_INPUT_SELECTOR = (
     "input[autocomplete=email], input[autocomplete=username], "
     "input[placeholder*=mail i]"
 )
+OTP_BOX_SELECTOR = "input[maxlength='1']"
+OTP_SINGLE_SELECTOR = (
+    "input[name*=code i], input[id*=code i], input[placeholder*=code i], "
+    "input[aria-label*=code i], input[name*=otp i], input[id*=otp i], "
+    "input[placeholder*=otp i], input[aria-label*=otp i], "
+    "input[autocomplete='one-time-code'], input[inputmode='numeric']"
+)
+
+
+async def _visible_inputs(page, selector: str):
+    try:
+        matches = page.locator(selector)
+        count = await matches.count()
+    except Exception:
+        return []
+    visible = []
+    for index in range(count):
+        try:
+            field = matches.nth(index)
+            if await field.is_visible():
+                visible.append(field)
+        except Exception:
+            continue
+    return visible
+
+
+async def _first_visible_input(page, selector: str):
+    visible = await _visible_inputs(page, selector)
+    return visible[0] if visible else None
 
 
 async def _auth_page_text(page) -> str:
@@ -557,8 +586,8 @@ async def _js_submit_login_email(page, account_email: str) -> bool:
 
 async def _fill_email_on_login(page, account_email: str) -> bool:
     try:
-        loc = page.locator(EMAIL_INPUT_SELECTOR).first
-        if await loc.count() == 0 or not await loc.is_visible():
+        loc = await _first_visible_input(page, EMAIL_INPUT_SELECTOR)
+        if loc is None:
             return False
         try:
             await loc.click(timeout=2000)
@@ -614,30 +643,23 @@ async def _fill_email_on_login(page, account_email: str) -> bool:
 
 
 async def _has_visible_login_email_input(page) -> bool:
-    try:
-        loc = page.locator(EMAIL_INPUT_SELECTOR).first
-        return bool(await loc.count()) and await loc.is_visible()
-    except Exception:
-        return False
+    return await _first_visible_input(page, EMAIL_INPUT_SELECTOR) is not None
 
 
 async def _fill_otp_code(page, code: str) -> bool:
     try:
-        boxes = page.locator("input[maxlength='1']")
-        n = await boxes.count()
-        if n >= 6:
-            for i in range(min(6, n)):
+        visible_boxes = await _visible_inputs(page, OTP_BOX_SELECTOR)
+        if len(visible_boxes) >= 6:
+            for i, box in enumerate(visible_boxes[:6]):
                 try:
-                    await boxes.nth(i).fill(code[i] if i < len(code) else "")
+                    await box.fill(code[i] if i < len(code) else "")
                     await asyncio.sleep(0.05)
                 except Exception:
                     pass
             print("[codex-oauth] email-verification: 已填入 OTP")
             return True
-        single = page.locator(
-            "input[name*=code i], input[placeholder*=code i], input[inputmode=numeric], input[type=text]"
-        ).first
-        if await single.count() and await single.is_visible():
+        single = await _first_visible_input(page, OTP_SINGLE_SELECTOR)
+        if single is not None:
             await single.fill(code)
             try:
                 await single.press("Enter")
@@ -651,20 +673,9 @@ async def _fill_otp_code(page, code: str) -> bool:
 
 
 async def _has_visible_otp_input(page) -> bool:
-    try:
-        boxes = page.locator("input[maxlength='1']")
-        if await boxes.count() and await boxes.first.is_visible():
-            return True
-    except Exception:
-        pass
-    try:
-        single = page.locator(
-            "input[name*=code i], input[placeholder*=code i], "
-            "input[autocomplete='one-time-code'], input[inputmode='numeric']"
-        ).first
-        return bool(await single.count()) and await single.is_visible()
-    except Exception:
-        return False
+    if len(await _visible_inputs(page, OTP_BOX_SELECTOR)) >= 6:
+        return True
+    return await _first_visible_input(page, OTP_SINGLE_SELECTOR) is not None
 
 
 async def _has_visible_account_picker(page) -> bool:
@@ -2082,6 +2093,9 @@ async def run_codex_oauth(
             # /log-in 页：填邮箱回车
             if "auth.openai.com/log-in" in cur:
                 if account_email:
+                    if await _has_visible_otp_input(page):
+                        last_action_at = now
+                        continue
                     if await _has_auth_soft_error(page):
                         if await _try_recover_auth_soft_error(page, label="log-in"):
                             login_attempts = 0
@@ -2115,9 +2129,9 @@ async def run_codex_oauth(
                         last_login_url = cur
 
                     if login_attempts < 3:
-                        login_attempts += 1
-                        print(f"[codex-oauth] log-in: 第 {login_attempts}/3 次提交邮箱")
+                        print(f"[codex-oauth] log-in: 第 {login_attempts + 1}/3 次提交邮箱")
                         if await _fill_email_on_login(page, account_email):
+                            login_attempts += 1
                             progressed = await _wait_for_oauth_progress(page, callback_future, cur, timeout_seconds=12.0)
                             if progressed:
                                 last_action_at = 0.0
@@ -2125,6 +2139,12 @@ async def run_codex_oauth(
                                 last_action_at = now - action_cooldown
                                 print("[codex-oauth] log-in: 提交后仍停留在登录页，准备重试")
                             continue
+                        if await _has_visible_otp_input(page):
+                            last_action_at = 0.0
+                            continue
+                        login_attempts += 1
+                        last_action_at = now
+                        continue
 
                     if authorize_restarts < 2:
                         authorize_restarts += 1
